@@ -97,6 +97,7 @@ void test3() { // Основной поток
 
 int main()
 {
+	printf("%d %d\n", sizeof(lite_actor_t), sizeof(lite_thread_t));
 	printf(" time: thread#N action\n");
 	// Для запуска одного теста закамментить ненужные
 	test1();
