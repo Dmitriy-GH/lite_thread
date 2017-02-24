@@ -23,7 +23,9 @@
    type можно использовать для внутренней идентификации. Библиотека никак его не использует.
 
    Два способа передачи сообщений:
+
    lite_thread_run(lite_msg_t* msg, lite_func_t func, void* env = NULL)
+
    return lite_msg_return(lite_msg_t* msg, lite_func_t func, void* env = NULL)
 
    Отправка через return предпочтительнее, т.к. если у обработчика пустая очередь и он свободен, то 
