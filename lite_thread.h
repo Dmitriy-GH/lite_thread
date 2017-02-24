@@ -206,7 +206,7 @@ namespace std {
 }
 
 // Актор (функция + очередь сообщений)
-class lite_actor_t {
+class alignas(64) lite_actor_t {
 	friend lite_thread_t;
 protected:
 	std::queue<lite_msg_t*> msg_queue;	// Очередь сообщений
@@ -217,12 +217,9 @@ protected:
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
 	std::atomic<lite_msg_t*> msg_end;	// Сообщение об окончании работы
 
-	//char empty_data[64 - (sizeof(lite_actor_func_t) + sizeof(std::atomic<int>) * 3 + sizeof(std::queue<lite_msg_t*>) + sizeof(spin_lock_t) + sizeof(std::atomic<lite_msg_t*>))]; // выравнивание sizeof(lite_actor_t) кратно 64
 	//---------------------------------
 	// Конструктор
-	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1) {
-		//assert(sizeof(lite_actor_t) % 64 == 0);
-	}
+	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1) {	}
 
 	// Деструктор
 	~lite_actor_t() {
@@ -393,7 +390,7 @@ public: //-------------------------------------------------------------
 //----- ПОТОКИ ---------------------------------------------------------------------
 //----------------------------------------------------------------------------------
 
-class lite_thread_t {
+class alignas(64) lite_thread_t {
 	size_t num;					// Номер потока
 	std::atomic<bool> is_free;	// Поток свободен
 	std::mutex mtx_sleep;		// Для засыпания
@@ -401,11 +398,8 @@ class lite_thread_t {
 	std::thread::id thread_id;	// ID потока
 	std::atomic<bool> is_end;	// Поток зевершен
 
-	//char empty_data[124 - sizeof(size_t) - sizeof(std::atomic<bool>)*2 - sizeof(std::mutex) - sizeof(std::condition_variable) - sizeof(std::thread::id)];
 	// Конструктор
-	lite_thread_t(size_t num) : num(num), is_free(true), is_end(false) {
-		//assert(sizeof(lite_thread_t) % 64 == 0);
-	}
+	lite_thread_t(size_t num) : num(num), is_free(true), is_end(false) { }
 
 	// Общие данные всех потоков
 	struct static_info_t {
