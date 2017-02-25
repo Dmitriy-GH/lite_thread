@@ -113,8 +113,8 @@ int main()
 	printf("%d %d\n", sizeof(lite_actor_t), sizeof(lite_thread_t));
 	printf(" time: thread#N action\n");
 	// Для запуска одного теста закамментить ненужные
-	test1();
-	test2();
+	//test1();
+	//test2();
 	worker_t w; // это test3();
 	//-------------
 	std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // для запуска потоков
