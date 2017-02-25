@@ -68,7 +68,6 @@
 #include <condition_variable>
 #include <unordered_map>
 #include <assert.h>
-#include <windows.h>
 
 #ifdef _DEBUG
 #ifndef DEBUG_LT
