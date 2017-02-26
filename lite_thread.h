@@ -264,7 +264,8 @@ class alignas(64) lite_actor_t {
 protected:
 	std::queue<lite_msg_t*> msg_queue;	// Очередь сообщений
 	//std::atomic<lite_msg_t*> msg_one;	// Альтернатива очереди при msg_count == 1
-	spin_lock_t mtx;					// Синхронизация доступа к очереди
+	//spin_lock_t mtx;					// Синхронизация доступа к очереди
+	std::mutex mtx;						// Синхронизация доступа к очереди
 	lite_actor_func_t la_func;			// Функция с окружением
 	std::atomic<int> msg_count;			// Сообщений в очереди
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
@@ -292,7 +293,8 @@ protected:
 	// Постановка сообщения в очередь, возврашает true если надо будить другой поток
 	bool push(lite_msg_t* msg) noexcept {
 		{
-			lock_t lck(mtx); // Блокировка
+			std::unique_lock<std::mutex> lck(mtx);
+			//lock_t lck(mtx); // Блокировка
 			msg_queue.push(msg);
 			msg_count++;
 		}
@@ -321,7 +323,8 @@ protected:
 	// Получение сообщения из очереди
 	lite_msg_t* pop() noexcept {
 		lite_msg_t* msg = NULL;
-		lock_t lck(mtx); // Блокировка
+		//lock_t lck(mtx); // Блокировка
+		std::unique_lock<std::mutex> lck(mtx);
 		if (msg_queue.size() == 0) {
 			assert(msg_count == 0);
 		} else {
@@ -461,7 +464,8 @@ public: //-------------------------------------------------------------
 		if (count <= 0) count = 1;
 		if (count == la->thread_max) return;
 
-		lock_t lck(la->mtx); // Блокировка
+		std::unique_lock<std::mutex> lck(la->mtx);
+		//lock_t lck(la->mtx); // Блокировка
 		la->actor_free += count - la->thread_max;
 		la->thread_max = count;
 	}
