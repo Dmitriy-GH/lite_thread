@@ -394,10 +394,13 @@ protected:
 	}
 
 	// static методы уровня потока -------------------------------------------------
+	typedef std::vector<lite_actor_t*> lite_actor_cache_t;
 	struct thread_info_t {
 		lite_msg_t* msg_del;		// Обрабатываемое сообщение, будет удалено после обработки
 		bool need_wake_up;			// Необходимо будить другой поток при отправке
 		lite_actor_t* la_next_run;	// Следующий на выполнение актор
+		lite_actor_cache_t la_cache; // Кэш списка акторов
+		lite_actor_cache_t::iterator la_iterator;
 	};
 
 	// Текущее сообщение в потоке
@@ -408,12 +411,12 @@ protected:
 
 
 	// static методы глобальные ----------------------------------------------------
-	typedef std::unordered_map<lite_actor_func_t, lite_actor_t*> lite_actor_info_list_t;
+	typedef std::unordered_map<lite_actor_func_t, lite_actor_t*> lite_actor_list_t;
 
 	struct static_info_t {
-		lite_actor_info_list_t la_list; // Индекс для поиска lite_actor_t*
+		lite_actor_list_t la_list; // Индекс для поиска lite_actor_t*
 		spin_lock_t mtx;				// Блокировка для доступа к la_list
-		lite_actor_info_list_t::iterator la_iterator;
+		lite_actor_list_t::iterator la_iterator;
 	};
 
 	static static_info_t& si() noexcept {
@@ -435,7 +438,7 @@ protected:
 	// Поиск ожидающего выполнение
 	static lite_actor_t* find_ready() noexcept {
 		lite_actor_t* ret = ti().la_next_run;
-		if(ret != NULL && ret->msg_count > 0 && ret->is_ready()) {
+		if (ret != NULL && ret->is_ready()) {
 			ti().la_next_run = NULL;
 			return ret;
 		}
@@ -445,23 +448,38 @@ protected:
 		// Поиск очередного свободного актора
 		ret = NULL;
 
-		lock_t lck(si().mtx); // Блокировка
-		for(lite_actor_info_list_t::iterator it = si().la_iterator; it != si().la_list.end(); it++) {
-			if (it->second->msg_count > 0 && it->second->is_ready()) {
-				ret = it->second;
-				it++;
-				si().la_iterator = it;
-				break;
-			}
-		}
-		if(ret == NULL) {
-			for (lite_actor_info_list_t::iterator it = si().la_list.begin(); it != si().la_iterator; it++) {
-				if (it->second->msg_count > 0 && it->second->is_ready()) {
-					ret = it->second;
+		if(ti().la_cache.size() > 0) { // Поиск в кэше с места предыдущей остановки
+			for (lite_actor_cache_t::iterator it = ti().la_iterator; it != ti().la_cache.end(); it++) {
+				if ((*it)->is_ready()) {
+					ret = (*it);
 					it++;
-					si().la_iterator = it;
+					ti().la_iterator = it;
 					break;
 				}
+			}
+			if (ret == NULL) {
+				for (lite_actor_cache_t::iterator it = ti().la_cache.begin(); it != ti().la_iterator; it++) {
+					if ((*it)->is_ready()) {
+						ret = (*it);
+						it++;
+						ti().la_iterator = it;
+						break;
+					}
+				}
+			}
+		}
+
+		if(ret == NULL) {
+			lock_t lck(si().mtx); // Блокировка
+			if(ti().la_cache.size() != si().la_list.size()) {
+				// Размер не совпал. Обновление кэша
+				ti().la_cache.resize(si().la_list.size());
+				lite_actor_cache_t::iterator it_c = ti().la_cache.begin();
+				for (lite_actor_list_t::iterator it = si().la_iterator; it != si().la_list.end(); it++, it_c++) {
+					(*it_c) = it->second;
+					if ((*it_c)->is_ready() && ret == NULL) ret = (*it_c);
+				}
+				ti().la_iterator = ti().la_cache.begin();
 			}
 		}
 		return ret;
@@ -476,7 +494,7 @@ public: //-------------------------------------------------------------
 		lite_actor_func_t a(func, env);
 
 		lock_t lck(si().mtx); // Блокировка
-		lite_actor_info_list_t::iterator it = si().la_list.find(a);
+		lite_actor_list_t::iterator it = si().la_list.find(a);
 		lite_actor_t* ai;
 		if (it != si().la_list.end()) {
 			ai = it->second;
