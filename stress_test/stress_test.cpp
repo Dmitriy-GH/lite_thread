@@ -223,7 +223,7 @@ int main()
 	for(size_t i = 0; i < MSG_COUNT; i++) {
 		msg[i] = lite_msg_create<data_t>(TYPE_DATA);
 		d[i] = lite_msg_data<data_t>(msg[i]);  // Указатель на содержимое сообщения
-		memset(d[i]->mark, 1, sizeof(d[i]->mark));
+		memset(d[i]->mark, 1, sizeof(data_t::mark));
 	}
 	// Распределение обработчиков по сообщениям
 	for (size_t i = 0; i < MSG_COUNT; i++) {
