@@ -157,7 +157,7 @@ struct lite_msg_t {
 
 	// Счетчик используемых сообщений, меняется только при _DEBUG
 	static int used_msg(int delta = 0) noexcept {
-		static int used = 0;
+		static std::atomic<int> used = 0;
 		used += delta;
 		return used;
 	}
@@ -535,14 +535,23 @@ class alignas(64) lite_thread_t {
 		lock_t lck(si().mtx); // Блокировка
 		size_t max = si().thread_count;
 		assert(max <= si().worker_list.size());
-		lite_thread_t** p = &si().worker_list[0];
+
+		for (size_t i = 0; i < max; i++) {
+			lite_thread_t* w = si().worker_list[i];
+			if (w->is_free) {
+				wf = w;
+				break;
+			}
+		}
+
+		/*lite_thread_t** p = &si().worker_list[0];
 		lite_thread_t** end = p + si().thread_count;
 		for(; p < end; p++) {
 			if((*p)->is_free) {
 				wf = *p;
 				break;
 			}
-		}
+		}*/
 		si().worker_free = wf;
 		return wf;
 	}
@@ -631,7 +640,7 @@ public: //-------------------------------------
 	// Завершение, ожидание всех потоков
 	static void end() noexcept {
 		#ifdef DEBUG_LT
-		printf("%5d: !!! wait all !!!\n", time_now());
+		printf("%5d: --- wait all ---\n", time_now());
 		#endif	
 		// Ожидание завершения расчетов. Нулевой поток разбудит перед засыпанием
 		while(si().thread_work > 0) {
@@ -639,7 +648,7 @@ public: //-------------------------------------
 			si().cv_end.wait_for(lck, std::chrono::milliseconds(1000));
 		}
 		#ifdef DEBUG_LT
-		printf("%5d: !!! stop all !!!\n", time_now());
+		printf("%5d: --- stop all ---\n", time_now());
 		#endif	
 		// Остановка потоков
 		si().stop = true;
@@ -676,6 +685,7 @@ public: //-------------------------------------
 		#endif		
 		#if defined(_DEBUG) | defined(DEBUG_LT)
 		printf("%5d: !!! end !!!\n", time_now());
+		if (lite_msg_t::used_msg() != 0) printf("ERROR: in memory %d messages\n", time_now(), (int)lite_msg_t::used_msg());
 		assert(lite_msg_t::used_msg() == 0); // Остались не удаленные сообщения 
 		#endif
 		si().stop = false;
