@@ -132,7 +132,9 @@ int main()
 	worker_t w;
 	std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста
 	lite_thread_end();
+#ifdef _DEBUG
 	printf("Press any key ...\n");
 	getchar();
+#endif
 	return 0;
 }

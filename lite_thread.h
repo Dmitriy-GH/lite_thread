@@ -663,7 +663,7 @@ class alignas(64) lite_thread_t {
 				lt->is_free = true;
 				if(lt->cv.wait_for(lck, std::chrono::seconds(1)) == std::cv_status::timeout) {	// Проснулся по таймауту
 					#ifdef DEBUG_LT
-					printf("%5d: thread#%d wake up (total: %d, work: %d)\n", time_now(), lt->num, si().thread_count, si().thread_work);
+					printf("%5d: thread#%d wake up (total: %d, work: %d)\n", time_now(), lt->num, (int)si().thread_count, (int)si().thread_work);
 					#endif
 					stop = (lt->num == si().thread_count - 1);	// Остановка потока с наибольшим номером
 				} else {
