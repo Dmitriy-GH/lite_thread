@@ -26,6 +26,8 @@
 #endif
 #include "../lite_thread.h"
 #include <atomic>
+#include <vector>
+#include <stdio.h>
 
 //---------------------------------------------------------------------
 // Типы сообщений
