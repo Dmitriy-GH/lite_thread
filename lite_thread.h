@@ -82,7 +82,7 @@ std::atomic<uint32_t> stat_thread_sleep;
 std::atomic<uint32_t> stat_msg_create;
 std::atomic<uint32_t> stat_queue_push; 
 std::atomic<uint32_t> stat_actor_get;
-std::atomic<uint32_t> stat_msg_try_run;
+std::atomic<uint32_t> stat_msg_not_run;
 std::atomic<uint32_t> stat_msg_run;
 std::atomic<uint32_t> stat_actor_find;
 
@@ -93,7 +93,7 @@ void print_stat() {
 	printf("msg_create    %u\n", (uint32_t)stat_msg_create);
 	printf("queue_push    %u\n", (uint32_t)stat_queue_push);
 	printf("actor_get     %u\n", (uint32_t)stat_actor_get);
-	printf("msg_try_run   %u\n", (uint32_t)stat_msg_try_run);
+	printf("msg_not_run   %u\n", (uint32_t)stat_msg_not_run);
 	printf("msg_run       %u\n", (uint32_t)stat_msg_run);
 	printf("actor_find    %u\n", (uint32_t)stat_actor_find);
 }
@@ -259,6 +259,7 @@ class alignas(64) lite_actor_t {
 	friend lite_thread_t;
 protected:
 	std::queue<lite_msg_t*> msg_queue;	// Очередь сообщений
+	//std::atomic<lite_msg_t*> msg_one;	// Альтернатива очереди при msg_count == 1
 	spin_lock_t mtx;					// Синхронизация доступа к очереди
 	lite_actor_func_t la_func;			// Функция с окружением
 	std::atomic<int> msg_count;			// Сообщений в очереди
@@ -286,19 +287,19 @@ protected:
 
 	// Постановка сообщения в очередь, возврашает true если надо будить другой поток
 	bool push(lite_msg_t* msg) noexcept {
-		if (msg == ti().msg_del) {
-			// Помеченное на удаление сообщение поместили в очередь другого актора. Снятие пометки
-			ti().msg_del = NULL; 
-		} else if(ti().msg_del == NULL) {
-			// Не было предыдушего сообщения, отправка из чужого потока
-			ti().need_wake_up = true;
-		}
-
 		{
 			lock_t lck(mtx); // Блокировка
 			msg_queue.push(msg);
 			msg_count++;
-			//mtx.unlock();
+		}
+
+		if (msg == ti().msg_del) {
+			// Помеченное на удаление сообщение поместили в очередь другого актора. Снятие пометки
+			ti().msg_del = NULL;
+		}
+		else if (ti().msg_del == NULL) {
+			// Не было предыдушего сообщения, отправка из чужого потока
+			ti().need_wake_up = true;
 		}
 
 		bool need_wake_up = ti().need_wake_up;
@@ -313,30 +314,35 @@ protected:
 		return need_wake_up;
 	}
 
+	// Получение сообщения из очереди
+	lite_msg_t* pop() noexcept {
+		lite_msg_t* msg = NULL;
+		lock_t lck(mtx); // Блокировка
+		if (msg_queue.size() == 0) {
+			assert(msg_count == 0);
+		} else {
+			msg = msg_queue.front();
+			msg_queue.pop();
+			msg_count--;
+		}
+		return msg;
+	}
+
 	// Запуск обработки сообщения, если не задано то из очереди
-	void run(lite_msg_t* msg = NULL) noexcept {
-		#ifdef STAT_LT
-		stat_msg_try_run++;
-		#endif
+	void run() noexcept {
+		lite_msg_t* msg = NULL;
 		actor_free--;
 		if (actor_free < 0) {
 			// Уже выполняется разрешенное количество акторов
 			actor_free++;
-			if (msg != NULL) push(msg); // Отправка сообщения в очередь
+			#ifdef STAT_LT
+			stat_msg_not_run++;
+			#endif
 			return;
 		}
 
-		if (msg == NULL) {
-			// Извлечение сообщения из очереди
-			lock_t lck(mtx); // Блокировка
-			if (msg_queue.size() == 0) {
-				assert(msg_count == 0);
-			} else {
-				msg = msg_queue.front();
-				msg_queue.pop();
-				msg_count--;
-			}
-		}
+		// Извлечение сообщения из очереди
+		if (msg == NULL) msg = pop();
 
 		if (msg != NULL) { // Запуск функции
 			#ifdef STAT_LT
@@ -544,14 +550,6 @@ class alignas(64) lite_thread_t {
 			}
 		}
 
-		/*lite_thread_t** p = &si().worker_list[0];
-		lite_thread_t** end = p + si().thread_count;
-		for(; p < end; p++) {
-			if((*p)->is_free) {
-				wf = *p;
-				break;
-			}
-		}*/
 		si().worker_free = wf;
 		return wf;
 	}
@@ -685,7 +683,7 @@ public: //-------------------------------------
 		#endif		
 		#if defined(_DEBUG) | defined(DEBUG_LT)
 		printf("%5d: !!! end !!!\n", time_now());
-		if (lite_msg_t::used_msg() != 0) printf("ERROR: in memory %d messages\n", time_now(), (int)lite_msg_t::used_msg());
+		if (lite_msg_t::used_msg() != 0) printf("ERROR: in memory %d messages\n", lite_msg_t::used_msg());
 		assert(lite_msg_t::used_msg() == 0); // Остались не удаленные сообщения 
 		#endif
 		si().stop = false;
