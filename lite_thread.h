@@ -78,9 +78,10 @@
 
 #ifdef STAT_LT
 // Счетчики для отладки
-std::atomic<uint32_t> stat_thread_create; // Создано потоков
-std::atomic<uint32_t> stat_thread_wake_up; // Сколько раз будились потоки
-std::atomic<uint32_t> stat_parallel_run;   // Максимальное количество потоков работавших параллельно
+std::atomic<uint32_t> stat_thread_create;	// Создано потоков
+std::atomic<uint32_t> stat_thread_wake_up;	// Сколько раз будились потоки
+std::atomic<uint32_t> stat_parallel_run;	// Максимальное количество потоков работавших параллельно
+std::atomic<uint32_t> stat_thread_max;		// Максимальное количество потоков запущенных одновременно
 std::atomic<uint32_t> stat_msg_create;		// Создано сообщений
 std::atomic<uint32_t> stat_queue_push; 
 std::atomic<uint32_t> stat_actor_get;
@@ -90,15 +91,16 @@ std::atomic<uint32_t> stat_actor_find;
 
 void print_stat() {
 	printf("\n------- STAT -------\n");
-	printf("thread_create %u\n", (uint32_t)stat_thread_create);
-	printf("thread_wake_up%u\n", (uint32_t)stat_thread_wake_up);
-	printf("parallel_run  %u\n", (uint32_t)stat_parallel_run);
-	printf("msg_create    %u\n", (uint32_t)stat_msg_create);
-	printf("queue_push    %u\n", (uint32_t)stat_queue_push);
-	printf("actor_get     %u\n", (uint32_t)stat_actor_get);
-	printf("msg_not_run   %u\n", (uint32_t)stat_msg_not_run);
-	printf("msg_run       %u\n", (uint32_t)stat_msg_run);
-	printf("actor_find    %u\n", (uint32_t)stat_actor_find);
+	printf("thread_create  %u\n", (uint32_t)stat_thread_create);
+	printf("thread_wake_up %u\n", (uint32_t)stat_thread_wake_up);
+	printf("thread_max     %u\n", (uint32_t)stat_thread_max);
+	printf("parallel_run   %u\n", (uint32_t)stat_parallel_run);
+	printf("msg_create     %u\n", (uint32_t)stat_msg_create);
+	printf("queue_push     %u\n", (uint32_t)stat_queue_push);
+	printf("actor_get      %u\n", (uint32_t)stat_actor_get);
+	printf("msg_not_run    %u\n", (uint32_t)stat_msg_not_run);
+	printf("msg_run        %u\n", (uint32_t)stat_msg_run);
+	printf("actor_find     %u\n", (uint32_t)stat_actor_find);
 }
 #endif
 
@@ -509,9 +511,6 @@ class alignas(64) lite_thread_t {
 
 	// Создание потока
 	static void create_thread() noexcept {
-		#ifdef STAT_LT
-		stat_thread_create++;
-		#endif
 		lite_thread_t* lt;
 		{
 			lock_t lck(si().mtx); // Блокировка
@@ -531,6 +530,11 @@ class alignas(64) lite_thread_t {
 		//printf("%5d: create() %d\n", time_now(), num);
 		std::thread th(thread, lt);
 		th.detach();
+		#ifdef STAT_LT
+		stat_thread_create++;
+		int cnt = si().thread_count;
+		if (stat_thread_max < cnt) stat_thread_max = cnt;
+		#endif
 	}
 
 	// Поиск свободного потока
@@ -579,7 +583,6 @@ class alignas(64) lite_thread_t {
 	static void thread(lite_thread_t* lt) noexcept {
 		#ifdef DEBUG_LT
 		printf("%5d: thread#%d start\n", time_now(), lt->num);
-		srand((uint32_t)time(NULL));
 		#endif
 		this_num(lt->num);
 		lt->is_free = false;
