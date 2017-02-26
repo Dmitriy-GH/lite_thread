@@ -102,17 +102,32 @@ void print_stat() {
 //----------------------------------------------------------------------------------
 //------ ОБЩЕЕ ---------------------------------------------------------------------
 //----------------------------------------------------------------------------------
+class lock_t;
+
 // Блокировка без переключения в режим ядра
 class spin_lock_t { // Взято тут http://anki3d.org/spinlock/
 	std::atomic_flag lck = ATOMIC_FLAG_INIT;
-
-public:
-	void lock() {
+	friend lock_t;
+protected:
+	void lock() noexcept {
 		while (lck.test_and_set(std::memory_order_acquire)) {}
 	}
 
-	void unlock() {
+	void unlock() noexcept {
 		lck.clear(std::memory_order_release);
+	}
+};
+
+class lock_t {
+	spin_lock_t* mtx;
+public:
+	lock_t(spin_lock_t& mtx) noexcept {
+		this->mtx = &mtx;
+		this->mtx->lock();
+	}
+
+	~lock_t() noexcept {
+		this->mtx->unlock();
 	}
 };
 
@@ -278,10 +293,14 @@ protected:
 			// Не было предыдушего сообщения, отправка из чужого потока
 			ti().need_wake_up = true;
 		}
-		mtx.lock();
-		msg_queue.push(msg);
-		msg_count++;
-		mtx.unlock();
+
+		{
+			lock_t lck(mtx); // Блокировка
+			msg_queue.push(msg);
+			msg_count++;
+			//mtx.unlock();
+		}
+
 		bool need_wake_up = ti().need_wake_up;
 		if(actor_free > 0) {
 			// Актор готов запуститься
@@ -304,13 +323,12 @@ protected:
 			// Уже выполняется разрешенное количество акторов
 			actor_free++;
 			if (msg != NULL) push(msg); // Отправка сообщения в очередь
-			mtx.unlock();
 			return;
 		}
 
 		if (msg == NULL) {
 			// Извлечение сообщения из очереди
-			mtx.lock();
+			lock_t lck(mtx); // Блокировка
 			if (msg_queue.size() == 0) {
 				assert(msg_count == 0);
 			} else {
@@ -318,7 +336,6 @@ protected:
 				msg_queue.pop();
 				msg_count--;
 			}
-			mtx.unlock();
 		}
 
 		if (msg != NULL) { // Запуск функции
@@ -364,13 +381,13 @@ protected:
 
 	// Очистка всего
 	static void clear() noexcept {
-		si().mtx.lock();
+		lock_t lck(si().mtx); // Блокировка
+
 		for(auto& a : si().la_list) {
 			delete a.second;
 		}
 		si().la_list.clear();
 		si().la_iterator = si().la_list.begin();
-		si().mtx.unlock();
 	}
 
 	// Поиск ожидающего выполнение
@@ -385,7 +402,8 @@ protected:
 		#endif
 		// Поиск очередного свободного актора
 		ret = NULL;
-		si().mtx.lock();
+
+		lock_t lck(si().mtx); // Блокировка
 		for(lite_actor_info_list_t::iterator it = si().la_iterator; it != si().la_list.end(); it++) {
 			if (it->second->msg_count > 0 && it->second->is_ready()) {
 				ret = it->second;
@@ -404,7 +422,6 @@ protected:
 				}
 			}
 		}
-		si().mtx.unlock();
 		return ret;
 	}
 
@@ -415,7 +432,8 @@ public: //-------------------------------------------------------------
 		stat_actor_get++;
 		#endif
 		lite_actor_func_t a(func, env);
-		si().mtx.lock();
+
+		lock_t lck(si().mtx); // Блокировка
 		lite_actor_info_list_t::iterator it = si().la_list.find(a);
 		lite_actor_t* ai;
 		if (it != si().la_list.end()) {
@@ -425,7 +443,6 @@ public: //-------------------------------------------------------------
 			si().la_list[a] = ai;
 			si().la_iterator = si().la_list.begin();
 		}
-		si().mtx.unlock();
 		return ai;
 	}
 
@@ -433,10 +450,10 @@ public: //-------------------------------------------------------------
 	static void parallel(int count, lite_actor_t* la) noexcept {
 		if (count <= 0) count = 1;
 		if (count == la->thread_max) return;
-		la->mtx.lock();
+
+		lock_t lck(la->mtx); // Блокировка
 		la->actor_free += count - la->thread_max;
 		la->thread_max = count;
-		la->mtx.unlock();
 	}
 
 	// Копирование сообщения
@@ -487,20 +504,22 @@ class alignas(64) lite_thread_t {
 		#ifdef STAT_LT
 		stat_thread_create++;
 		#endif
-		si().mtx.lock();
-		size_t num = si().thread_count;
-		si().thread_count++;
-		if (si().worker_list.size() == num) {
-			si().worker_list.push_back(NULL);
-		} else {
-			assert(num < si().worker_list.size());
-			assert(si().worker_list[num] != NULL);
-			assert(si().worker_list[num]->is_end);
-			delete si().worker_list[num];
+		lite_thread_t* lt;
+		{
+			lock_t lck(si().mtx); // Блокировка
+			size_t num = si().thread_count;
+			si().thread_count++;
+			if (si().worker_list.size() == num) {
+				si().worker_list.push_back(NULL);
+			} else {
+				assert(num < si().worker_list.size());
+				assert(si().worker_list[num] != NULL);
+				assert(si().worker_list[num]->is_end);
+				delete si().worker_list[num];
+			}
+			lt = new lite_thread_t(num);
+			si().worker_list[num] = lt;
 		}
-		lite_thread_t* lt = new lite_thread_t(num);
-		si().worker_list[num] = lt;
-		si().mtx.unlock();
 		//printf("%5d: create() %d\n", time_now(), num);
 		std::thread th(thread, lt);
 		th.detach();
@@ -513,7 +532,7 @@ class alignas(64) lite_thread_t {
 
 		if (si().thread_count == 0) return NULL;
 
-		si().mtx.lock();
+		lock_t lck(si().mtx); // Блокировка
 		size_t max = si().thread_count;
 		assert(max <= si().worker_list.size());
 		lite_thread_t** p = &si().worker_list[0];
@@ -524,7 +543,6 @@ class alignas(64) lite_thread_t {
 				break;
 			}
 		}
-		si().mtx.unlock();
 		si().worker_free = wf;
 		return wf;
 	}
@@ -597,10 +615,10 @@ class alignas(64) lite_thread_t {
 		#ifdef DEBUG_LT
 		printf("%5d: thread#%d stop\n", time_now(), lt->num);
 		#endif
-		si().mtx.lock();
+
+		lock_t lck(si().mtx); // Блокировка
 		lt->is_end = true;
 		si().thread_count--;
-		si().mtx.unlock();
 		si().cv_end.notify_one();
 	}
 
@@ -627,14 +645,15 @@ public: //-------------------------------------
 		si().stop = true;
 		while(true) { // Ожидание остановки всех потоков
 			bool is_end = true;
-			si().mtx.lock();
-			for (auto& w : si().worker_list) {
-				if(!w->is_end) { // Поток не завершился
-					w->cv.notify_one(); // Пробуждение потока
-					is_end = false;
+			{
+				lock_t lck(si().mtx); // Блокировка
+				for (auto& w : si().worker_list) {
+					if(!w->is_end) { // Поток не завершился
+						w->cv.notify_one(); // Пробуждение потока
+						is_end = false;
+					}
 				}
 			}
-			si().mtx.unlock();
 			if (is_end) {
 				break;
 			} else { // Ожидание пока какой-нибудь завершившийся поток не разбудит
