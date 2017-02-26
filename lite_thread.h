@@ -260,7 +260,7 @@ class alignas(64) lite_actor_t {
 	friend lite_thread_t;
 protected:
 	std::queue<lite_msg_t*> msg_queue;	// Очередь сообщений
-	//std::atomic<lite_msg_t*> msg_one;	// Альтернатива очереди при msg_count == 1
+	std::atomic<lite_msg_t*> msg_one;	// Альтернатива очереди при msg_count == 1
 	spin_lock_t mtx;					// Синхронизация доступа к очереди
 	//std::mutex mtx;					// Синхронизация доступа к очереди
 	lite_actor_func_t la_func;			// Функция с окружением
@@ -292,15 +292,29 @@ protected:
 		{
 			//std::unique_lock<std::mutex> lck(mtx);
 			lock_t lck(mtx); // Блокировка
-			msg_queue.push(msg);
+			switch(msg_count) {
+			case 0:
+				msg_one = msg;
+				break;
+
+			case 1:
+				#ifdef DEBUG_LT
+				assert(msg_one != (lite_msg_t*)NULL);
+				#endif
+				msg_queue.push(msg_one);
+				msg_queue.push(msg);
+				break;
+
+			default:
+				msg_queue.push(msg);
+			}
 			msg_count++;
 		}
 
 		if (msg == ti().msg_del) {
 			// Помеченное на удаление сообщение поместили в очередь другого актора. Снятие пометки
 			ti().msg_del = NULL;
-		}
-		else if (ti().msg_del == NULL) {
+		} else if (ti().msg_del == NULL) {
 			// Не было предыдушего сообщения, отправка из чужого потока
 			ti().need_wake_up = true;
 		}
@@ -312,7 +326,7 @@ protected:
 			if (ti().la_next_run == NULL) ti().la_next_run = this;
 		}
 		#ifdef STAT_LT
-		stat_queue_push++;
+		if(msg_count > 1) stat_queue_push++;
 		#endif
 		return need_wake_up;
 	}
@@ -322,11 +336,29 @@ protected:
 		lite_msg_t* msg = NULL;
 		lock_t lck(mtx); // Блокировка
 		//std::unique_lock<std::mutex> lck(mtx);
-		if (msg_queue.size() == 0) {
-			assert(msg_count == 0);
+		if (msg_count == 0) {
+			assert(msg_queue.size() == 0);
 		} else {
-			msg = msg_queue.front();
-			msg_queue.pop();
+			switch(msg_count) {
+			case 1:
+				msg = msg_one;
+				#ifdef DEBUG_LT
+				msg_one = NULL;
+				#endif
+				break;
+
+			case 2:
+				msg = msg_queue.front();
+				msg_queue.pop();
+				msg_one = msg_queue.front();
+				msg_queue.pop();
+				break;
+
+			default:
+				msg = msg_queue.front();
+				msg_queue.pop();
+			}
+
 			msg_count--;
 		}
 		return msg;

@@ -214,7 +214,6 @@ void finish_func(lite_msg_t* msg, void* env) {
 
 int main()
 {
-	printf("compile %s %s\n", __DATE__, __TIME__);
 	printf("%5d: START workers: %d  messages: %d  time: %d sec\n", time_now(), ACTOR_COUNT, MSG_COUNT, TEST_TIME);
 	// Инициализация указателей
 	start = lite_actor_get(start_func);
@@ -262,6 +261,7 @@ int main()
 	} else {
 		printf("%5d: test OK worked: %d msg  transfer: %d msg  MSG_COUNT: %d\n", time_now(), (int)msg_count, total, MSG_COUNT);
 	}
+	printf("compile %s %s\n", __DATE__, __TIME__);
 #ifdef _DEBUG
 	printf("Press any key ...\n");
 	getchar();
