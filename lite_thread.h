@@ -83,11 +83,11 @@ std::atomic<uint32_t> stat_thread_wake_up;	// Сколько раз будили
 std::atomic<uint32_t> stat_parallel_run;	// Максимальное количество потоков работавших параллельно
 std::atomic<uint32_t> stat_thread_max;		// Максимальное количество потоков запущенных одновременно
 std::atomic<uint32_t> stat_msg_create;		// Создано сообщений
-std::atomic<uint32_t> stat_queue_push; 
-std::atomic<uint32_t> stat_actor_get;
-std::atomic<uint32_t> stat_msg_not_run;
-std::atomic<uint32_t> stat_msg_run;
-std::atomic<uint32_t> stat_actor_find;
+std::atomic<uint32_t> stat_queue_push;		// Счетчик помещения сообщений в очередь
+std::atomic<uint32_t> stat_actor_get;		// Запросов lite_actor_t* по (func, env)
+std::atomic<uint32_t> stat_actor_find;		// Поиск очередного актора готового к работе
+std::atomic<uint32_t> stat_msg_not_run;		// Промахи обработки сообщения, уже обрабатывается другим потоком
+std::atomic<uint32_t> stat_msg_run;			// Обработано сообщений
 
 void print_stat() {
 	printf("\n------- STAT -------\n");
@@ -98,9 +98,9 @@ void print_stat() {
 	printf("msg_create     %u\n", (uint32_t)stat_msg_create);
 	printf("queue_push     %u\n", (uint32_t)stat_queue_push);
 	printf("actor_get      %u\n", (uint32_t)stat_actor_get);
+	printf("actor_find     %u\n", (uint32_t)stat_actor_find);
 	printf("msg_not_run    %u\n", (uint32_t)stat_msg_not_run);
 	printf("msg_run        %u\n", (uint32_t)stat_msg_run);
-	printf("actor_find     %u\n", (uint32_t)stat_actor_find);
 }
 #endif
 
@@ -262,7 +262,6 @@ protected:
 	std::queue<lite_msg_t*> msg_queue;	// Очередь сообщений
 	std::atomic<lite_msg_t*> msg_one;	// Альтернатива очереди при msg_count == 1
 	spin_lock_t mtx;					// Синхронизация доступа к очереди
-	//std::mutex mtx;					// Синхронизация доступа к очереди
 	lite_actor_func_t la_func;			// Функция с окружением
 	std::atomic<int> msg_count;			// Сообщений в очереди
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
@@ -290,7 +289,6 @@ protected:
 	// Постановка сообщения в очередь, возврашает true если надо будить другой поток
 	bool push(lite_msg_t* msg) noexcept {
 		{
-			//std::unique_lock<std::mutex> lck(mtx);
 			lock_t lck(mtx); // Блокировка
 			switch(msg_count) {
 			case 0:
@@ -333,9 +331,8 @@ protected:
 
 	// Получение сообщения из очереди
 	lite_msg_t* pop() noexcept {
-		lite_msg_t* msg = NULL;
 		lock_t lck(mtx); // Блокировка
-		//std::unique_lock<std::mutex> lck(mtx);
+		lite_msg_t* msg = NULL;
 		if (msg_count == 0) {
 			assert(msg_queue.size() == 0);
 		} else {
@@ -654,31 +651,33 @@ class alignas(64) lite_thread_t {
 			}
 			if (si().stop) break;
 			// Уход в ожидание
+			bool stop = false;
 			{
 				#ifdef DEBUG_LT
 				printf("%5d: thread#%d sleep\n", time_now(), lt->num);
 				#endif
-				if(lt->num == 0) si().cv_end.notify_one(); // Нулевой поток будит ожидание завершения
+				if(si().thread_work == 0) si().cv_end.notify_one(); // Если никто не работает, то разбудить ожидание завершения
 				lite_thread_t* wf = si().worker_free;
 				if (wf == NULL || wf->num > lt->num) si().worker_free = lt; // Следующим будить поток с меньшим номером
 				std::unique_lock<std::mutex> lck(lt->mtx_sleep);
 				lt->is_free = true;
-				if(lt->cv.wait_for(lck, std::chrono::seconds(1)) == std::cv_status::timeout	// Проснулся по таймауту
-							&& lt->num != 0													// Не нулевой поток
-							&& lt->num == si().thread_count - 1								// Поток с большим номером
-							&& si().thread_work < si().thread_count - 1) {					// Есть еще спящие потоки
-					lt->is_free = false;
-					if(find_free() != NULL) break; // Завершение потока
+				if(lt->cv.wait_for(lck, std::chrono::seconds(1)) == std::cv_status::timeout) {	// Проснулся по таймауту
+					#ifdef DEBUG_LT
+					printf("%5d: thread#%d wake up (total: %d, work: %d)\n", time_now(), lt->num, si().thread_count, si().thread_work);
+					#endif
+					stop = (lt->num == si().thread_count - 1);	// Остановка потока с наибольшим номером
+				} else {
+					#ifdef DEBUG_LT
+					printf("%5d: thread#%d wake up\n", time_now(), lt->num);
+					#endif
 				}
 				lt->is_free = false;
 				if (si().worker_free == lt) si().worker_free = NULL;
-				#ifdef DEBUG_LT
-				printf("%5d: thread#%d wake up\n", time_now(), lt->num);
-				#endif
 				#ifdef STAT_LT
 				stat_thread_wake_up++;
 				#endif
 			}
+			if (stop) break;
 		}
 		#ifdef DEBUG_LT
 		printf("%5d: thread#%d stop\n", time_now(), lt->num);
@@ -701,10 +700,10 @@ public: //-------------------------------------
 		#ifdef DEBUG_LT
 		printf("%5d: --- wait all ---\n", time_now());
 		#endif	
-		// Ожидание завершения расчетов. Нулевой поток разбудит перед засыпанием
+		// Ожидание завершения расчетов. 
 		while(si().thread_work > 0) {
 			std::unique_lock<std::mutex> lck(si().mtx_end);
-			si().cv_end.wait_for(lck, std::chrono::milliseconds(1000));
+			si().cv_end.wait_for(lck, std::chrono::milliseconds(300));
 		}
 		#ifdef DEBUG_LT
 		printf("%5d: --- stop all ---\n", time_now());
@@ -742,7 +741,7 @@ public: //-------------------------------------
 		#ifdef STAT_LT
 		print_stat();
 		#endif		
-		#if defined(_DEBUG) | defined(DEBUG_LT)
+		#ifdef DEBUG_LT
 		printf("%5d: !!! end !!!\n", time_now());
 		if (lite_msg_t::used_msg() != 0) printf("ERROR: in memory %d messages\n", lite_msg_t::used_msg());
 		assert(lite_msg_t::used_msg() == 0); // Остались не удаленные сообщения 

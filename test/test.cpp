@@ -1,32 +1,31 @@
-﻿#define DEBUG_LT
-#define STAT_LT
-#ifdef NDEBUG
-#undef NDEBUG
-#endif
+﻿// Простейшие примеры использования с выводом всего происходящего в потоках в консоль
+
+#define DEBUG_LT
 #include "../lite_thread.h"
 #include <stdio.h>
 #include <iostream>
 #include <thread>
 #include <vector>
 #include <chrono>
-//#include <time.h>
 
-void work(int n) { // Эмуляция работы
+// Эмуляция работы
+void work(int n) {
 	printf("%5d: thread#%d recv %d\n", time_now(), lite_thread_num(), n); // Начало обработки
-	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	printf("%5d: thread#%d end %d\n", time_now(), lite_thread_num(), n); // Конец
 }
 
+//------------------------------------------------------------------------
 // Тест 1.
-// 10 запусков подряд (work 100+)
+// 10 запусков подряд (в выводе recv 100+)
 void actor1(lite_msg_t* msg, void* env) {// Обработчик сообщения
 	uint32_t* x = lite_msg_data<uint32_t>(msg); // Указатель на содержимое сообщения
 	assert(x != NULL);
-	work(*x); // работаем с содержимым
+	work(*x); // Обработка содержимого сообщения
 }
 
 void test1() { // Основной поток
-			   // Отправка 10 сообщений
+	// Отправка 10 сообщений
 	for (int i = 100; i < 110; i++) {
 		lite_msg_t* msg = lite_msg_create<int>(); // Создание сообщения
 		int* x = lite_msg_data<int>(msg); // Указатель на содержимое сообщения
@@ -38,11 +37,11 @@ void test1() { // Основной поток
 
 //------------------------------------------------------------------------
 // Тест 2.
-// 20 запусков подряд с обработкой в 3 потока (work 200+)
+// 20 запусков подряд с обработкой в 3 потока (в выводе recv 200+)
 void actor2(lite_msg_t* msg, void* env) {// Обработчик сообщения
 	int* x = lite_msg_data<int>(msg); // Указатель на содержимое сообщения
 	assert(x != NULL);
-	work(*x);
+	work(*x); // Обработка содержимого сообщения
 }
 
 void test2() { // Основной поток
@@ -58,13 +57,31 @@ void test2() { // Основной поток
 
 //------------------------------------------------------------------------
 // Тест 3.
-// 1 запуск и 10 рекурсивных вызовов (work 300+)
+// 1 запуск и 10 рекурсивных вызовов (в выводе recv 300+)
 #define TYPE_DATA 1
 #define TYPE_END  2
 
 class worker_t {
 	int count; // Количество вызовов
 	lite_actor_t* i_am; // Актор указывающий на этот объект
+
+	// Обработка сообщения TYPE_DATA
+	void work_data(lite_msg_t* msg) {
+		int* x = lite_msg_data<int>(msg); // Указатель на содержимое сообщения
+		assert(x != NULL);
+		work(*x);
+		(*x)++; // Изменение сообщения
+		count++; // Счетчик отправок
+		if (count < 10) {
+			lite_thread_run(msg, i_am); // Отправляем сообщение себе
+		}
+	}
+
+	// Обработка сообщения TYPE_END (оповещение о завершении работы)
+	void end() {
+		printf("%5d: thread#%d work end. count = %d\n", time_now(), lite_thread_num(), count);
+	}
+
 public:
 	// Конструктор
 	worker_t() {
@@ -81,24 +98,16 @@ public:
 		lite_thread_run(msg, i_am); // Отправка сообщения 
 	}
 
+	// Прием входящего сообщения
 	static void recv(lite_msg_t* msg, void* env) {
 		worker_t* w = (worker_t*)env;
 		switch(msg->type) {
 		case TYPE_DATA:
-		{
-			int* x = lite_msg_data<int>(msg); // Указатель на содержимое сообщения
-			assert(x != NULL);
-			printf("%5d: thread#%d recv %d\n", time_now(), lite_thread_num(), *x);
-			(*x)++; // Изменение сообщения
-			w->count++; // Счетчик отправок
-			if (w->count < 10) {
-				lite_thread_run(msg, w->i_am); // Отправляем сообщение себе
-			}
+			w->work_data(msg);
 			return;
-		}
 
 		case TYPE_END:
-			printf("%5d: thread#%d work end. count = %d\n", time_now(), lite_thread_num(), w->count);
+			w->end();
 			return;
 
 		default:
@@ -113,11 +122,15 @@ int main()
 	printf("%d %d\n", sizeof(lite_actor_t), sizeof(lite_thread_t));
 	printf(" time: thread#N action\n");
 	// Для запуска одного теста закамментить ненужные
-	//test1();
-	//test2();
-	worker_t w; // это test3();
-	//-------------
-	std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // для запуска потоков
+	printf("%5d: --- test 1 ---\n", time_now());
+	test1();
+	std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста
+	printf("%5d: --- test 2 ---\n", time_now());
+	test2();
+	std::this_thread::sleep_for(std::chrono::seconds(3)); // для завершения теста
+	printf("%5d: --- test 3 ---\n", time_now());
+	worker_t w;
+	std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста
 	lite_thread_end();
 	printf("Press any key ...\n");
 	getchar();

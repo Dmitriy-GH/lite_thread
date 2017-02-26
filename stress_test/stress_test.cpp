@@ -214,6 +214,7 @@ void finish_func(lite_msg_t* msg, void* env) {
 
 int main()
 {
+	printf("compile %s %s\n", __DATE__, __TIME__);
 	printf("%5d: START workers: %d  messages: %d  time: %d sec\n", time_now(), ACTOR_COUNT, MSG_COUNT, TEST_TIME);
 	// Инициализация указателей
 	start = lite_actor_get(start_func);
@@ -266,7 +267,5 @@ int main()
 	printf("Press any key ...\n");
 	getchar();
 #endif
-
-	//delete[] worker_list;
 	return 0;
 }
