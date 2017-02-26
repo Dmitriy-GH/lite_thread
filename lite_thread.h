@@ -232,10 +232,7 @@ public:
 	lite_func_t func;
 	void* env;
 
-	lite_actor_func_t(lite_func_t func, void* env) noexcept {
-		this->func = func;
-		this->env = env;
-	}
+	lite_actor_func_t(lite_func_t func, void* env) : func(func), env(env) { }
 
 	lite_actor_func_t& operator=(const lite_actor_func_t& a) noexcept {
 		this->func = a.func;
@@ -264,8 +261,8 @@ class alignas(64) lite_actor_t {
 protected:
 	std::queue<lite_msg_t*> msg_queue;	// Очередь сообщений
 	//std::atomic<lite_msg_t*> msg_one;	// Альтернатива очереди при msg_count == 1
-	//spin_lock_t mtx;					// Синхронизация доступа к очереди
-	std::mutex mtx;						// Синхронизация доступа к очереди
+	spin_lock_t mtx;					// Синхронизация доступа к очереди
+	//std::mutex mtx;					// Синхронизация доступа к очереди
 	lite_actor_func_t la_func;			// Функция с окружением
 	std::atomic<int> msg_count;			// Сообщений в очереди
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
@@ -293,8 +290,8 @@ protected:
 	// Постановка сообщения в очередь, возврашает true если надо будить другой поток
 	bool push(lite_msg_t* msg) noexcept {
 		{
-			std::unique_lock<std::mutex> lck(mtx);
-			//lock_t lck(mtx); // Блокировка
+			//std::unique_lock<std::mutex> lck(mtx);
+			lock_t lck(mtx); // Блокировка
 			msg_queue.push(msg);
 			msg_count++;
 		}
@@ -323,8 +320,8 @@ protected:
 	// Получение сообщения из очереди
 	lite_msg_t* pop() noexcept {
 		lite_msg_t* msg = NULL;
-		//lock_t lck(mtx); // Блокировка
-		std::unique_lock<std::mutex> lck(mtx);
+		lock_t lck(mtx); // Блокировка
+		//std::unique_lock<std::mutex> lck(mtx);
 		if (msg_queue.size() == 0) {
 			assert(msg_count == 0);
 		} else {
@@ -373,7 +370,7 @@ protected:
 
 	// Текущее сообщение в потоке
 	static thread_info_t& ti() noexcept {
-		thread_local thread_info_t ti;
+		thread_local thread_info_t ti = {0};
 		return ti;
 	}
 
@@ -464,8 +461,8 @@ public: //-------------------------------------------------------------
 		if (count <= 0) count = 1;
 		if (count == la->thread_max) return;
 
-		std::unique_lock<std::mutex> lck(la->mtx);
-		//lock_t lck(la->mtx); // Блокировка
+		//std::unique_lock<std::mutex> lck(la->mtx);
+		lock_t lck(la->mtx); // Блокировка
 		la->actor_free += count - la->thread_max;
 		la->thread_max = count;
 	}
@@ -498,14 +495,14 @@ class alignas(64) lite_thread_t {
 
 	// Общие данные всех потоков
 	struct static_info_t {
-		std::vector<lite_thread_t*> worker_list; // Массив описателей потоков
-		std::atomic<lite_thread_t*> worker_free; // Указатель на свободный поток
-		spin_lock_t mtx;						// Блокировка доступа к массиву потоков
-		std::atomic<bool> stop;					// Флаг остановки всех потоков
-		std::atomic<size_t> thread_count;		// Количество потоков
-		std::atomic<size_t> thread_work;		// Количество работающих потоков
-		std::mutex mtx_end;						// Для ожидания завершения потоков
-		std::condition_variable cv_end;			// Для ожидания завершения потоков
+		std::vector<lite_thread_t*> worker_list;	// Массив описателей потоков
+		std::atomic<lite_thread_t*> worker_free = {0}; // Указатель на свободный поток
+		spin_lock_t mtx;							// Блокировка доступа к массиву потоков
+		std::atomic<bool> stop = {0};				// Флаг остановки всех потоков
+		std::atomic<size_t> thread_count = { 0 };	// Количество потоков
+		std::atomic<size_t> thread_work = { 0 };	// Количество работающих потоков
+		std::mutex mtx_end;							// Для ожидания завершения потоков
+		std::condition_variable cv_end;				// Для ожидания завершения потоков
 	};
 
 	static static_info_t& si() {
@@ -536,7 +533,7 @@ class alignas(64) lite_thread_t {
 		th.detach();
 		#ifdef STAT_LT
 		stat_thread_create++;
-		int cnt = si().thread_count;
+		size_t cnt = si().thread_count;
 		if (stat_thread_max < cnt) stat_thread_max = cnt;
 		#endif
 	}
@@ -600,7 +597,7 @@ class alignas(64) lite_thread_t {
 				// Обработка сообщений
 				work_msg(la);
 				#ifdef STAT_LT
-				int t = si().thread_work;
+				size_t t = si().thread_work;
 				if (stat_parallel_run < t) stat_parallel_run = t;
 				#endif		
 				si().thread_work--;
