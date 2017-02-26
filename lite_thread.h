@@ -68,6 +68,7 @@
 #include <condition_variable>
 #include <unordered_map>
 #include <assert.h>
+#include <time.h>
 
 #ifdef _DEBUG
 #ifndef DEBUG_LT
@@ -77,9 +78,10 @@
 
 #ifdef STAT_LT
 // Счетчики для отладки
-std::atomic<uint32_t> stat_thread_create;
-std::atomic<uint32_t> stat_thread_sleep;
-std::atomic<uint32_t> stat_msg_create;
+std::atomic<uint32_t> stat_thread_create; // Создано потоков
+std::atomic<uint32_t> stat_thread_wake_up; // Сколько раз будились потоки
+std::atomic<uint32_t> stat_parallel_run;   // Максимальное количество потоков работавших параллельно
+std::atomic<uint32_t> stat_msg_create;		// Создано сообщений
 std::atomic<uint32_t> stat_queue_push; 
 std::atomic<uint32_t> stat_actor_get;
 std::atomic<uint32_t> stat_msg_not_run;
@@ -89,7 +91,8 @@ std::atomic<uint32_t> stat_actor_find;
 void print_stat() {
 	printf("\n------- STAT -------\n");
 	printf("thread_create %u\n", (uint32_t)stat_thread_create);
-	printf("thread_sleep  %u\n", (uint32_t)stat_thread_sleep);
+	printf("thread_wake_up%u\n", (uint32_t)stat_thread_wake_up);
+	printf("parallel_run  %u\n", (uint32_t)stat_parallel_run);
 	printf("msg_create    %u\n", (uint32_t)stat_msg_create);
 	printf("queue_push    %u\n", (uint32_t)stat_queue_push);
 	printf("actor_get     %u\n", (uint32_t)stat_actor_get);
@@ -203,10 +206,9 @@ struct lite_msg_t {
 	// Указатель на данные
 	template <typename T>
 	static T* get(lite_msg_t* msg) noexcept {
-		if (sizeof(T) == msg->size) {
+		if (msg != NULL && sizeof(T) == msg->size) {
 			return (T*)msg->data;
-		}
-		else {
+		} else {
 			return NULL;
 		}
 	}
@@ -577,6 +579,7 @@ class alignas(64) lite_thread_t {
 	static void thread(lite_thread_t* lt) noexcept {
 		#ifdef DEBUG_LT
 		printf("%5d: thread#%d start\n", time_now(), lt->num);
+		srand((uint32_t)time(NULL));
 		#endif
 		this_num(lt->num);
 		lt->is_free = false;
@@ -589,14 +592,15 @@ class alignas(64) lite_thread_t {
 				if (si().thread_work == si().thread_count && !si().stop) create_thread();
 				// Обработка сообщений
 				work_msg(la);
+				#ifdef STAT_LT
+				int t = si().thread_work;
+				if (stat_parallel_run < t) stat_parallel_run = t;
+				#endif		
 				si().thread_work--;
 			}
 			if (si().stop) break;
 			// Уход в ожидание
 			{
-				#ifdef STAT_LT
-				stat_thread_sleep++;
-				#endif
 				#ifdef DEBUG_LT
 				printf("%5d: thread#%d sleep\n", time_now(), lt->num);
 				#endif
@@ -616,6 +620,9 @@ class alignas(64) lite_thread_t {
 				if (si().worker_free == lt) si().worker_free = NULL;
 				#ifdef DEBUG_LT
 				printf("%5d: thread#%d wake up\n", time_now(), lt->num);
+				#endif
+				#ifdef STAT_LT
+				stat_thread_wake_up++;
 				#endif
 			}
 		}
