@@ -102,7 +102,7 @@ public:
 			return;
 
 		default:
-			printf("%5d: thread#%d unnown type %d\n", time_now(), msg->type);
+			printf("%5d: thread#%d unknown type %d\n", time_now(), lite_thread_num(), msg->type);
 		}
 	}
 };
