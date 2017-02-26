@@ -160,7 +160,7 @@ struct lite_msg_t {
 
 	// Счетчик используемых сообщений, меняется только при _DEBUG
 	static int used_msg(int delta = 0) noexcept {
-		static std::atomic<int> used = 0;
+		static std::atomic<int> used = {0};
 		used += delta;
 		return used;
 	}
