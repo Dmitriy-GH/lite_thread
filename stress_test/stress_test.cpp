@@ -28,6 +28,7 @@
 #include <atomic>
 #include <vector>
 #include <stdio.h>
+#include <string.h>
 
 //---------------------------------------------------------------------
 // Типы сообщений
@@ -234,7 +235,7 @@ int main()
 		}
 	}
 	// Пересечение потоков на каждом MSG_COUNT*3 обработчике
-	for (size_t j = 0; j < ACTOR_COUNT; j += MSG_COUNT * 3) {
+	for (size_t j = 0; j < ACTOR_COUNT - MSG_COUNT; j += MSG_COUNT * 3) {
 		for (size_t i = 0; i < MSG_COUNT - 1; i++) {
 			d[i]->map[j + i] = d[i + 1]->map[j + i];
 		}
