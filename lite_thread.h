@@ -78,10 +78,10 @@
 
 #ifdef STAT_LT
 // Счетчики для отладки
+std::atomic<uint32_t> stat_thread_max;		// Максимальное количество потоков запущенных одновременно
+std::atomic<uint32_t> stat_parallel_run;	// Максимальное количество потоков работавших параллельно
 std::atomic<uint32_t> stat_thread_create;	// Создано потоков
 std::atomic<uint32_t> stat_thread_wake_up;	// Сколько раз будились потоки
-std::atomic<uint32_t> stat_parallel_run;	// Максимальное количество потоков работавших параллельно
-std::atomic<uint32_t> stat_thread_max;		// Максимальное количество потоков запущенных одновременно
 std::atomic<uint32_t> stat_msg_create;		// Создано сообщений
 std::atomic<uint32_t> stat_queue_push;		// Счетчик помещения сообщений в очередь
 std::atomic<uint32_t> stat_actor_get;		// Запросов lite_actor_t* по (func, env)
@@ -91,10 +91,10 @@ std::atomic<uint32_t> stat_msg_run;			// Обработано сообщений
 
 void print_stat() {
 	printf("\n------- STAT -------\n");
-	printf("thread_create  %u\n", (uint32_t)stat_thread_create);
-	printf("thread_wake_up %u\n", (uint32_t)stat_thread_wake_up);
 	printf("thread_max     %u\n", (uint32_t)stat_thread_max);
 	printf("parallel_run   %u\n", (uint32_t)stat_parallel_run);
+	printf("thread_create  %u\n", (uint32_t)stat_thread_create);
+	printf("thread_wake_up %u\n", (uint32_t)stat_thread_wake_up);
 	printf("msg_create     %u\n", (uint32_t)stat_msg_create);
 	printf("queue_push     %u\n", (uint32_t)stat_queue_push);
 	printf("actor_get      %u\n", (uint32_t)stat_actor_get);
@@ -257,8 +257,7 @@ namespace std {
 
 // Актор (функция + очередь сообщений)
 class alignas(64) lite_actor_t {
-	friend lite_thread_t;
-protected:
+
 	std::queue<lite_msg_t*> msg_queue;	// Очередь сообщений
 	std::atomic<lite_msg_t*> msg_one;	// Альтернатива очереди при msg_count == 1
 	spin_lock_t mtx;					// Синхронизация доступа к очереди
@@ -267,6 +266,9 @@ protected:
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
 	std::atomic<lite_msg_t*> msg_end;	// Сообщение об окончании работы
+
+	friend lite_thread_t;
+protected:
 
 	//---------------------------------
 	// Конструктор
@@ -291,11 +293,11 @@ protected:
 		{
 			lock_t lck(mtx); // Блокировка
 			switch(msg_count) {
-			case 0:
+			case 0: // Первое сообщение в очереди. Запись в msg_one
 				msg_one = msg;
 				break;
 
-			case 1:
+			case 1: // 2-е сообщение. Перенос msg_one в очередь и запись в очередь
 				#ifdef DEBUG_LT
 				assert(msg_one != (lite_msg_t*)NULL);
 				#endif
@@ -303,7 +305,7 @@ protected:
 				msg_queue.push(msg);
 				break;
 
-			default:
+			default: // >2 сообщений в очереди. Запись в очередь
 				msg_queue.push(msg);
 			}
 			msg_count++;
@@ -337,21 +339,21 @@ protected:
 			assert(msg_queue.size() == 0);
 		} else {
 			switch(msg_count) {
-			case 1:
+			case 1: // В очереди 1 сообщение, чтение из msg_one
 				msg = msg_one;
 				#ifdef DEBUG_LT
 				msg_one = NULL;
 				#endif
 				break;
 
-			case 2:
+			case 2: // В очереди 2 сообщения, чтение из очереди и перенос оставшегося в msg_one
 				msg = msg_queue.front();
 				msg_queue.pop();
 				msg_one = msg_queue.front();
 				msg_queue.pop();
 				break;
 
-			default:
+			default: // В очереди >2 сообщений, чтение из очереди
 				msg = msg_queue.front();
 				msg_queue.pop();
 			}
@@ -391,13 +393,10 @@ protected:
 	}
 
 	// static методы уровня потока -------------------------------------------------
-	typedef std::vector<lite_actor_t*> lite_actor_cache_t;
 	struct thread_info_t {
 		lite_msg_t* msg_del;		// Обрабатываемое сообщение, будет удалено после обработки
 		bool need_wake_up;			// Необходимо будить другой поток при отправке
 		lite_actor_t* la_next_run;	// Следующий на выполнение актор
-		lite_actor_cache_t la_cache; // Кэш списка акторов
-		lite_actor_cache_t::iterator la_iterator;
 	};
 
 	// Текущее сообщение в потоке
@@ -409,11 +408,13 @@ protected:
 
 	// static методы глобальные ----------------------------------------------------
 	typedef std::unordered_map<lite_actor_func_t, lite_actor_t*> lite_actor_list_t;
+	typedef std::vector<lite_actor_t*> lite_actor_cache_t;
 
 	struct static_info_t {
-		lite_actor_list_t la_list; // Индекс для поиска lite_actor_t*
-		spin_lock_t mtx;				// Блокировка для доступа к la_list
-		lite_actor_list_t::iterator la_iterator;
+		lite_actor_list_t la_idx;	// Индекс для поиска lite_actor_t*
+		spin_lock_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
+		lite_actor_cache_t la_list; // Кэш списка акторов
+		spin_lock_t mtx_list;		// Блокировка для доступа к la_list
 	};
 
 	static static_info_t& si() noexcept {
@@ -423,18 +424,20 @@ protected:
 
 	// Очистка всего
 	static void clear() noexcept {
-		lock_t lck(si().mtx); // Блокировка
+		lock_t lck(si().mtx_idx); // Блокировка
+		lock_t lck2(si().mtx_list); // Блокировка
 
 		for(auto& a : si().la_list) {
-			delete a.second;
+			delete a;
 		}
+		si().la_idx.clear();
 		si().la_list.clear();
-		si().la_iterator = si().la_list.begin();
 	}
 
 	// Поиск ожидающего выполнение
 	static lite_actor_t* find_ready() noexcept {
-		lite_actor_t* ret = ti().la_next_run;
+		// Указатель закэшированный  в потоке
+		lite_actor_t* ret = ti().la_next_run; 
 		if (ret != NULL && ret->is_ready()) {
 			ti().la_next_run = NULL;
 			return ret;
@@ -445,38 +448,19 @@ protected:
 		// Поиск очередного свободного актора
 		ret = NULL;
 
-		if(ti().la_cache.size() > 0) { // Поиск в кэше с места предыдущей остановки
-			for (lite_actor_cache_t::iterator it = ti().la_iterator; it != ti().la_cache.end(); it++) {
-				if ((*it)->is_ready()) {
-					ret = (*it);
-					it++;
-					ti().la_iterator = it;
-					break;
+		lock_t lck(si().mtx_list); // Блокировка
+		for (lite_actor_cache_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
+			if ((*it)->is_ready()) {
+				ret = (*it);
+				if(it != si().la_list.begin()) {
+					// Сдвиг активных ближе к началу
+					lite_actor_cache_t::iterator it2 = it;
+					it2--;
+					(*it) = (*it2);
+					(*it2) = ret;
 				}
-			}
-			if (ret == NULL) {
-				for (lite_actor_cache_t::iterator it = ti().la_cache.begin(); it != ti().la_iterator; it++) {
-					if ((*it)->is_ready()) {
-						ret = (*it);
-						it++;
-						ti().la_iterator = it;
-						break;
-					}
-				}
-			}
-		}
-
-		if(ret == NULL) {
-			lock_t lck(si().mtx); // Блокировка
-			if(ti().la_cache.size() != si().la_list.size()) {
-				// Размер не совпал. Обновление кэша
-				ti().la_cache.resize(si().la_list.size());
-				lite_actor_cache_t::iterator it_c = ti().la_cache.begin();
-				for (lite_actor_list_t::iterator it = si().la_iterator; it != si().la_list.end(); it++, it_c++) {
-					(*it_c) = it->second;
-					if ((*it_c)->is_ready() && ret == NULL) ret = (*it_c);
-				}
-				ti().la_iterator = ti().la_cache.begin();
+				it++;
+				break;
 			}
 		}
 		return ret;
@@ -490,17 +474,19 @@ public: //-------------------------------------------------------------
 		#endif
 		lite_actor_func_t a(func, env);
 
-		lock_t lck(si().mtx); // Блокировка
-		lite_actor_list_t::iterator it = si().la_list.find(a);
-		lite_actor_t* ai;
-		if (it != si().la_list.end()) {
-			ai = it->second;
+		lock_t lck(si().mtx_idx); // Блокировка
+		lite_actor_list_t::iterator it = si().la_idx.find(a); // Поиск по индексу
+		lite_actor_t* la;
+		if (it != si().la_idx.end()) {
+			la = it->second;
 		} else {
-			ai = new lite_actor_t(a);
-			si().la_list[a] = ai;
-			si().la_iterator = si().la_list.begin();
+			// Добавление
+			la = new lite_actor_t(a);
+			si().la_idx[a] = la;
+			lock_t lck2(si().mtx_list); // Блокировка
+			si().la_list.push_back(la);
 		}
-		return ai;
+		return la;
 	}
 
 	// Установка глубины распараллеливания
@@ -508,7 +494,6 @@ public: //-------------------------------------------------------------
 		if (count <= 0) count = 1;
 		if (count == la->thread_max) return;
 
-		//std::unique_lock<std::mutex> lck(la->mtx);
 		lock_t lck(la->mtx); // Блокировка
 		la->actor_free += count - la->thread_max;
 		la->thread_max = count;
