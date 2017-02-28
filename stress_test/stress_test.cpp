@@ -3,22 +3,23 @@
 Создается ACTOR_COUNT акторов обработчиков для каждого сообщения.
 Запускается MSG_COUNT сообщений (от количества сообщений зависит сколько максимум потоков потребуется)
 
-Каждое сообщение содержит маршрут прохождения (последовательность акторов, которые надо надо пройти)
-У каждого сообщения каждый MSG_COUNT*3 актор совпадает с актором другого сообщения
+Каждое сообщение содержит карту акторов и отметки прохождения акторов, при очередной пересылке 
+случайным образом выбирается следующий непройденный актор и пересылается ему. 
 
-Каждый актор ставит свой флаг обработки. По окончании проверка что все акторы пройдены и запуск нового.
+Каждый актор ставит свой флаг обработки. По окончании проверка что все акторы пройдены и запуск нового сообщения.
 
 Сообщения гоняются по кругу TEST_TIME секунд
 */
 
 #define ACTOR_COUNT 100  // Количество обработчиков
-#define MSG_COUNT	3   // Количество одновременно идущих сообщений
+#define MSG_COUNT	100   // Количество одновременно идущих сообщений
 #ifdef _DEBUG
 #define TEST_TIME	3  // Время теста, сек.
 #else
 #define TEST_TIME	10  // Время теста, сек.
 #endif
 //---------------------------------------------------------------------
+//#define SPINLOCK_LT
 #define DEBUG_LT
 #define STAT_LT
 #ifdef NDEBUG
@@ -39,7 +40,7 @@
 // Содержимое сообщения
 struct data_t {
 	int worker_num;	// Номер обработчика сообщения
-	lite_actor_t* map[ACTOR_COUNT]; // Карта прохождения сообщения
+	lite_actor_t* map[ACTOR_COUNT]; // Список акторов
 	bool mark[ACTOR_COUNT]; // Отметка актора об обработке сообщения
 };
 
@@ -58,6 +59,9 @@ class alignas(64) worker_t {
 	// Завершение работы актора
 	void end() {
 		worker_end++;
+		#ifdef _DEBUG
+		printf("%d,", count);
+		#endif
 		return;
 	}
 
@@ -85,14 +89,37 @@ class alignas(64) worker_t {
 			printf("ERROR: msg already worked\n");
 			return;
 		}
+		// Отметка что актор пройден
 		d->mark[d->worker_num] = true;
-		d->worker_num++;
-		if(d->worker_num < ACTOR_COUNT) {
+		// Выбор следующего
+		for(size_t i = 0; i < 5; i++) {
+			d->worker_num = rand() % ACTOR_COUNT;
+			if (!d->mark[d->worker_num]) break; // актор d->worker_num не пройден
+		}
+		if(d->mark[d->worker_num]) { // актор d->worker_num пройден
+			// Поиск следующего непройденного
+			for(size_t i = d->worker_num; i < ACTOR_COUNT; i++) {
+				if(!d->mark[i]) { // Актор i не пройден
+					d->worker_num = i;
+					break;
+				}
+			}
+		}
+		if (d->mark[d->worker_num]) { // актор d->worker_num пройден
+			// Поиск следующего непройденного
+			for (size_t i = 0; i < d->worker_num; i++) {
+				if (!d->mark[i]) { // Актор i не пройден
+					d->worker_num = i;
+					break;
+				}
+			}
+		}
+		if (d->mark[d->worker_num]) { // все акторы пройдены
+		  // Отправка на проверку
+			lite_thread_run(msg, finish);
+		} else {
 			// Отправка сообщения следующему
 			lite_thread_run(msg, d->map[d->worker_num]); 
-		} else {
-			// Отправка на проверку
-			lite_thread_run(msg, finish);
 		}
 		count++;
 		parallel--;
@@ -110,7 +137,7 @@ class alignas(64) worker_t {
 			return;
 
 		default:
-			printf("%5d: thread#%d unknown msg type %d\n", time_now(), lite_thread_num(), msg->type);
+			printf("%5lld: thread#%d unknown msg type %d\n", lite_time_now(), lite_thread_num(), msg->type);
 		}
 	}
 
@@ -142,7 +169,7 @@ public:
 std::atomic<int> worker_t::worker_end = { 0 };
 //---------------------------------------------------------------------
 // Массив акторов обработчиков
-std::vector<worker_t> worker_list(ACTOR_COUNT * MSG_COUNT);
+std::vector<worker_t> worker_list(ACTOR_COUNT);
 
 std::atomic<int> msg_count = { 0 }; // Счетчик сообщений дошедших до финиша
 std::atomic<int> msg_finished = { 0 }; // Счетчик сообщений пришедших после остановки теста
@@ -157,17 +184,8 @@ void start_func(lite_msg_t* msg, void* env) {
 		printf("ERROR: wrong msg size or type\n");
 		return;
 	}
-	// Проверка что все отметки поставлены
-	int count = 0;
-	for(size_t i = 0; i < ACTOR_COUNT; i++) {
-		if (d->mark[i]) count++;
-	}
-	if(count != ACTOR_COUNT) {
-		printf("ERROR: lost %d actors mark\n", ACTOR_COUNT - count);
-		return;
-	}
 	// Очистка отметок выполнения
-	d->worker_num = 0;
+	d->worker_num = rand() % ACTOR_COUNT;
 	memset(d->mark, 0, sizeof(d->mark));
 	// Отправка дальше
 	lite_thread_run(msg, d->map[d->worker_num]);
@@ -198,7 +216,7 @@ void finish_func(lite_msg_t* msg, void* env) {
 
 	msg_count++;
 
-	int time = time_now();
+	int64_t time = lite_time_now();
 	if(time > TEST_TIME * 1000) {
 		// Время теста истекло
 		msg_finished++;
@@ -206,7 +224,7 @@ void finish_func(lite_msg_t* msg, void* env) {
 	} else if(time > time_alert) {
 		// Вывод текущего состояния раз 0.5 сек
 		time_alert += 500;
-		printf("%5d: worked %d msg\n", time_now(), (int)msg_count);
+		printf("%5lld: worked %d msg\n", lite_time_now(), (int)msg_count);
 	}
 	// Проверки пройдены, запуск следующего
 	lite_thread_run(msg, start);
@@ -215,54 +233,38 @@ void finish_func(lite_msg_t* msg, void* env) {
 int main()
 {
 	printf("compile %s %s\n", __DATE__, __TIME__);
-	printf("%5d: START workers: %d  messages: %d  time: %d sec\n", time_now(), ACTOR_COUNT, MSG_COUNT, TEST_TIME);
+	printf("%5lld: START workers: %d  messages: %d  time: %d sec\n", lite_time_now(), ACTOR_COUNT, MSG_COUNT, TEST_TIME);
 	// Инициализация указателей
 	start = lite_actor_get(start_func);
 	finish = lite_actor_get(finish_func);
 
 	// Создание сообщений
-	lite_msg_t* msg[MSG_COUNT];
-	data_t* d[MSG_COUNT];
 	for(size_t i = 0; i < MSG_COUNT; i++) {
-		msg[i] = lite_msg_create<data_t>(TYPE_DATA);
-		d[i] = lite_msg_data<data_t>(msg[i]);  // Указатель на содержимое сообщения
-		memset(d[i]->mark, 1, sizeof(data_t::mark));
-	}
-	// Распределение обработчиков по сообщениям
-	for (size_t i = 0; i < MSG_COUNT; i++) {
-		for (size_t j = 0; j < ACTOR_COUNT; j++) {
-			d[i]->map[j] = worker_list[j*MSG_COUNT + i].handle();
-		}
-	}
-	// Пересечение потоков на каждом MSG_COUNT*3 обработчике
-	for (size_t j = 0; j < ACTOR_COUNT - MSG_COUNT; j += MSG_COUNT * 3) {
-		for (size_t i = 0; i < MSG_COUNT - 1; i++) {
-			d[i]->map[j + i] = d[i + 1]->map[j + i];
-		}
-	}
-	// Отправка сообщений
-	for (size_t i = 0; i < MSG_COUNT; i++) {
-		lite_thread_run(msg[i], start);
+		lite_msg_t* msg;
+		msg = lite_msg_create<data_t>(TYPE_DATA);
+		data_t* d = lite_msg_data<data_t>(msg);  // Указатель на содержимое сообщения
+		for(size_t j = 0; j < ACTOR_COUNT; j++) d->map[j] = worker_list[j].handle();
+		lite_thread_run(msg, start);
 	}
 
 	std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // для запуска потоков
-	lite_thread_end();
+	lite_thread_end(); // Ожидание окончания
 
 	int total = 0;
-	for(size_t i = 0; i < ACTOR_COUNT * MSG_COUNT; i++) {
+	for(size_t i = 0; i < ACTOR_COUNT; i++) {
 		total += worker_list[i].count_msg();
 	}
 
 	if(msg_finished != MSG_COUNT) {
 		printf("ERROR: lost %d messages\n", MSG_COUNT - msg_finished);
-	} else if (worker_t::count_end() != ACTOR_COUNT * MSG_COUNT) {
+	} else if (worker_t::count_end() != ACTOR_COUNT) {
 		printf("ERROR: lost %d worker finish\n", ACTOR_COUNT * MSG_COUNT - worker_t::count_end());
 	}else if (total != msg_count * ACTOR_COUNT) {
 			printf("ERROR: total %d need %d\n", total, msg_count * ACTOR_COUNT);
 	} else {
-		printf("%5d: test OK worked: %d msg  transfer: %d msg  MSG_COUNT: %d\n", time_now(), (int)msg_count, total, MSG_COUNT);
+		printf("%5lld: test OK worked: %d msg  transfer: %d msg  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, total, MSG_COUNT);
 	}
-	printf("compile %s %s\n", __DATE__, __TIME__);
+	printf("compile %s %s with %s\n", __DATE__, __TIME__, LOCK_TYPE_LT);
 #ifdef _DEBUG
 	printf("Press any key ...\n");
 	getchar();
