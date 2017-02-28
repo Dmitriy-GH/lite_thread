@@ -303,7 +303,7 @@ protected:
 
 	//---------------------------------
 	// Конструктор
-	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), msg_count(0), msg_end(0), msg_one(0) {	}
+	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), msg_count(0), msg_end(NULL), msg_one(NULL) {	}
 
 	// Деструктор
 	~lite_actor_t() {
