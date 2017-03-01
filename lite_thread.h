@@ -240,7 +240,7 @@ class lite_msg_queue_t {
 	lite_mutex_t mtx;				// Синхронизация доступа
 
 public:
-	lite_msg_queue_t() : msg_one(NULL) {}
+	lite_msg_queue_t() : msg_one(NULL), cnt(0) {}
 
 	// Добавление сообщения в очередь
 	void push(lite_msg_t* msg) noexcept {
