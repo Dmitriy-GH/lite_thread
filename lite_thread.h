@@ -69,6 +69,7 @@
 #include <unordered_map>
 #include <assert.h>
 #include <time.h>
+#include <shared_mutex>
 
 #ifdef _DEBUG
 #ifndef DEBUG_LT
@@ -86,6 +87,7 @@ std::atomic<uint32_t> stat_msg_create;		// Создано сообщений
 std::atomic<uint32_t> stat_actor_get;		// Запросов lite_actor_t* по (func, env)
 std::atomic<uint32_t> stat_actor_find;		// Поиск очередного актора готового к работе
 std::atomic<uint32_t> stat_msg_not_run;		// Промахи обработки сообщения, уже обрабатывается другим потоком
+std::atomic<uint32_t> stat_queue_max;		// Максимальная глубина очереди
 std::atomic<uint32_t> stat_queue_push;		// Счетчик помещения сообщений в очередь
 std::atomic<uint32_t> stat_msg_run;			// Обработано сообщений
 
@@ -99,6 +101,7 @@ void print_stat() {
 	printf("actor_get      %u\n", (uint32_t)stat_actor_get);
 	printf("actor_find     %u\n", (uint32_t)stat_actor_find);
 	printf("msg_not_run    %u\n", (uint32_t)stat_msg_not_run);
+	printf("queue_max      %u\n", (uint32_t)stat_queue_max);
 	printf("queue_push     %u\n", (uint32_t)stat_queue_push);
 	printf("msg_run        %u\n", (uint32_t)stat_msg_run);
 }
@@ -107,23 +110,7 @@ void print_stat() {
 //----------------------------------------------------------------------------------
 //------ ОБЩЕЕ ---------------------------------------------------------------------
 //----------------------------------------------------------------------------------
-#ifdef SPINLOCK_LT
-#define LOCK_TYPE_LT "spinlock"
-class lite_lock_t;
-// Блокировка без переключения в режим ядра
-class lite_mutex_t { // Взято тут http://anki3d.org/spinlock/
-	std::atomic_flag lck = ATOMIC_FLAG_INIT;
-	friend lite_lock_t;
-protected:
-	void lock() noexcept {
-		while (lck.test_and_set(std::memory_order_acquire)) {}
-	}
-
-	void unlock() noexcept {
-		lck.clear(std::memory_order_release);
-	}
-};
-#elif defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32) || defined(_WIN64)
 #define LOCK_TYPE_LT "critical section"
 #include <windows.h>
 class lite_mutex_t {
@@ -172,10 +159,6 @@ static int64_t lite_time_now() {
 }
 
 //----------------------------------------------------------------------------------
-//-------- ОЧЕРЕДЬ -----------------------------------------------------------------
-//----------------------------------------------------------------------------------
-
-//----------------------------------------------------------------------------------
 //-------- СООБЩЕНИE ---------------------------------------------------------------
 //----------------------------------------------------------------------------------
 class lite_actor_t;
@@ -205,12 +188,10 @@ struct lite_msg_t {
 		if (msg != NULL) {
 			msg->size = size;
 			msg->type = type;
-			//msg->actor = NULL;
 			if (size != 0) msg->data[0] = 0;
 		}
 		#ifdef DEBUG_LT
 		used_msg(1);
-		//printf("%5d: create msg#%p type#%X\n", time_now(), msg, msg->type);
 		#endif
 		#ifdef STAT_LT
 		stat_msg_create++;
@@ -227,7 +208,6 @@ struct lite_msg_t {
 	static void erase(lite_msg_t* msg) noexcept {
 		if (msg != NULL) {
 			#ifdef DEBUG_LT
-			//printf("%5d: delete msg#%p\n", time_now(), msg);
 			assert(msg->type != 0xDDDDDDDD); // Повторное удаление, у MSVC2015 в дебаге free() все переписывает на 0xDD
 			msg->type = 0xDDDDDDDD;
 			used_msg(-1);
@@ -248,6 +228,65 @@ struct lite_msg_t {
 
 };
 #pragma warning( pop )
+
+//----------------------------------------------------------------------------------
+//-------- ОЧЕРЕДЬ СООБЩЕНИЙ -------------------------------------------------------
+//----------------------------------------------------------------------------------
+
+class lite_msg_queue_t {
+	std::queue<lite_msg_t*> queue;	// Очередь сообщений
+	lite_msg_t* msg_one;			// Альтернатива очереди при msg_count == 1
+	std::atomic<int> cnt;			// Сообщений в очереди
+	lite_mutex_t mtx;				// Синхронизация доступа
+
+public:
+	lite_msg_queue_t() : msg_one(NULL) {}
+
+	// Добавление сообщения в очередь
+	void push(lite_msg_t* msg) noexcept {
+		lite_lock_t lck(mtx); // Блокировка
+		if (cnt == 0) {
+			// 1-е сообщение. Запись в msg_one
+			assert(msg_one == NULL);
+			msg_one = msg;
+		} else {
+			// 2-е сообщение. Запись в очередь
+			queue.push(msg);
+			#ifdef STAT_LT
+			stat_queue_push++;
+			uint32_t now = cnt + 1;
+			if (stat_queue_max < now) stat_queue_max = now;
+			#endif
+		}
+		cnt++;
+	}
+
+	// Чтение сообщения из очереди
+	lite_msg_t* pop() noexcept {
+		lite_lock_t lck(mtx); // Блокировка
+		// Чтение первого из msg_one
+		lite_msg_t* msg = msg_one;
+		if (msg != NULL) {
+			cnt--;
+			msg_one = NULL;
+			return msg;
+		}
+		// Чтение из очереди
+		msg = NULL;
+		if (cnt == 0) {
+			assert(queue.size() == 0);
+		} else {
+			msg = queue.front();
+			queue.pop();
+			cnt--;
+		}
+		return msg;
+	}
+
+	int count() noexcept {
+		return cnt;
+	}
+};
 
 //----------------------------------------------------------------------------------
 //------ ОБРАБОТЧИК (АКТОР) --------------------------------------------------------
@@ -289,11 +328,8 @@ namespace std {
 // Актор (функция + очередь сообщений)
 class alignas(64) lite_actor_t {
 
-	std::queue<lite_msg_t*> msg_queue;	// Очередь сообщений
-	std::atomic<lite_msg_t*> msg_one;	// Альтернатива очереди при msg_count == 1
-	lite_mutex_t mtx;					// Синхронизация доступа к очереди
+	lite_msg_queue_t msg_queue;			// Очередь сообщений
 	lite_actor_func_t la_func;			// Функция с окружением
-	std::atomic<int> msg_count;			// Сообщений в очереди
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
 	std::atomic<lite_msg_t*> msg_end;	// Сообщение об окончании работы
@@ -303,7 +339,7 @@ protected:
 
 	//---------------------------------
 	// Конструктор
-	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), msg_count(0), msg_end(NULL), msg_one(NULL) {	}
+	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), msg_end(NULL) {	}
 
 	// Деструктор
 	~lite_actor_t() {
@@ -316,26 +352,12 @@ protected:
 
 	// Проверка готовности к запуску
 	bool is_ready() noexcept {
-		return (msg_count > 0 && actor_free > 0);
+		return (msg_queue.count() > 0 && actor_free > 0);
 	}
 
 	// Постановка сообщения в очередь, возврашает true если надо будить другой поток
 	bool push(lite_msg_t* msg) noexcept {
-		{
-			lite_lock_t lck(mtx); // Блокировка
-			if(msg_count == 0) {
-				// 1-е сообщение. Запись в msg_one
-				lite_msg_t* old = msg_one.exchange(msg);
-				assert(old == NULL);
-			} else {
-				// 2-е сообщение. Запись в очередь
-				msg_queue.push(msg);
-				#ifdef STAT_LT
-				if (msg_count > 1) stat_queue_push++;
-				#endif
-			}
-			msg_count++;
-		}
+		msg_queue.push(msg);
 
 		if (msg == ti().msg_del) {
 			// Помеченное на удаление сообщение поместили в очередь другого актора. Снятие пометки
@@ -349,32 +371,16 @@ protected:
 		if(actor_free > 0) {
 			// Актор готов запуститься
 			ti().need_wake_up = true;
-			if (ti().la_next_run == NULL) ti().la_next_run = this;
+			if (ti().la_next_run == NULL) {
+				ti().la_next_run = this;
+			} else {
+				// Есть что выполнять на следующем шаге
+				need_wake_up = true;
+				lite_actor_t* nul = NULL;
+				si().la_next_run.compare_exchange_weak(nul, this);
+			}
 		}
 		return need_wake_up;
-	}
-
-	// Получение сообщения из очереди
-	lite_msg_t* pop() noexcept {
-		// Чтение первого из msg_one
-		lite_msg_t* msg = msg_one.exchange(NULL);
-		if(msg != NULL) {
-			msg_count--;
-			return msg;
-		} else if(msg_count == 0) {
-			return NULL;
-		}
-		// Чтение из очереди
-		lite_lock_t lck(mtx); // Блокировка
-		msg = msg_one.exchange(NULL);
-		if (msg_count == 0) {
-			assert(msg_queue.size() == 0);
-		} else {
-			msg = msg_queue.front();
-			msg_queue.pop();
-			msg_count--;
-		}
-		return msg;
 	}
 
 	// Запуск обработки сообщения, если не задано то из очереди
@@ -386,7 +392,7 @@ protected:
 			#endif
 		} else {
 			// Извлечение сообщения из очереди
-			lite_msg_t* msg = pop();
+			lite_msg_t* msg =  msg_queue.pop();
 
 			if (msg != NULL) { // Запуск функции
 				#ifdef STAT_LT
@@ -405,34 +411,6 @@ protected:
 		actor_free++;
 		return;
 	}
-	/*	void run() noexcept {
-		actor_free--;
-		if (actor_free < 0) {
-			// Уже выполняется разрешенное количество акторов
-			#ifdef STAT_LT
-			stat_msg_not_run++;
-			#endif
-		} else {
-			// Извлечение сообщения из очереди
-			lite_msg_t* msg = pop();
-
-			if (msg != NULL) { // Запуск функции
-				#ifdef STAT_LT
-				stat_msg_run++;
-				#endif
-				ti().msg_del = msg; // Пометка на удаление
-				ti().need_wake_up = false;
-				la_func.func(msg, la_func.env); // Запуск
-				if (msg == ti().msg_del) lite_msg_t::erase(msg);
-			} else {
-				#ifdef STAT_LT
-				stat_msg_not_run++;
-				#endif
-			}
-		}
-		actor_free++;
-		return;
-	}*/
 
 	// static методы уровня потока -------------------------------------------------
 	struct thread_info_t {
@@ -457,6 +435,7 @@ protected:
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
 		lite_actor_cache_t la_list; // Кэш списка акторов
 		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
+		std::atomic<lite_actor_t*> la_next_run;	// Следующий на выполнение актор
 	};
 
 	static static_info_t& si() noexcept {
@@ -481,16 +460,23 @@ protected:
 		// Указатель закэшированный  в потоке
 		if (ti().la_next_run != NULL) {
 			lite_actor_t* ret = ti().la_next_run;
-			ti().la_next_run = NULL;
 			if(ret->is_ready()) {
+				if (ret->thread_max > 1 || ret->msg_queue.count() == 1) ti().la_next_run = NULL; // Однопоточный актор с очередью планируем на текущий поток
 				return ret;
+			} else {
+				ti().la_next_run = NULL;
 			}
 		}
+
+		// Поиск очередного свободного актора
+		lite_actor_t* ret = si().la_next_run.exchange(NULL);
+		if (ret != NULL && ret->is_ready()) {
+			return ret;
+		}
+
 		#ifdef STAT_LT
 		stat_actor_find++;
 		#endif
-		// Поиск очередного свободного актора
-		lite_actor_t* ret = NULL;
 
 		lite_lock_t lck(si().mtx_list); // Блокировка
 		for (lite_actor_cache_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
@@ -503,9 +489,8 @@ protected:
 					(*it) = (*it2);
 					(*it2) = ret;
 				}
-				it++;
 				break;
-			}
+			} 
 		}
 		return ret;
 	}
@@ -538,9 +523,7 @@ public: //-------------------------------------------------------------
 		if (count <= 0) count = 1;
 		if (count == la->thread_max) return;
 
-		lite_lock_t lck(la->mtx); // Блокировка
-		la->actor_free += count - la->thread_max;
-		la->thread_max = count;
+		la->actor_free += count - la->thread_max.exchange(count);
 	}
 
 	// Копирование сообщения
@@ -604,7 +587,6 @@ class alignas(64) lite_thread_t {
 			lt = new lite_thread_t(num);
 			si().worker_list[num] = lt;
 		}
-		//printf("%5d: create() %d\n", time_now(), num);
 		std::thread th(thread_func, lt);
 		th.detach();
 		#ifdef STAT_LT
@@ -682,7 +664,7 @@ class alignas(64) lite_thread_t {
 			// Уход в ожидание
 			bool stop = false;
 			{
-				#ifdef DEBUG_LT
+				#ifdef _DEBUG
 				printf("%5lld: thread#%d sleep\n", lite_time_now(), lt->num);
 				#endif
 				if(si().thread_work == 0) si().cv_end.notify_one(); // Если никто не работает, то разбудить ожидание завершения
@@ -690,7 +672,6 @@ class alignas(64) lite_thread_t {
 				while(wf == NULL || wf->num > lt->num) { // Следующим будить поток с меньшим номером
 					si().worker_free.compare_exchange_weak(wf, lt);
 				}
-				//if (wf == NULL || wf->num > lt->num) si().worker_free = lt; // Следующим будить поток с меньшим номером
 				std::unique_lock<std::mutex> lck(lt->mtx_sleep);
 				lt->is_free = true;
 				if(lt->cv.wait_for(lck, std::chrono::seconds(1)) == std::cv_status::timeout) {	// Проснулся по таймауту
@@ -699,21 +680,21 @@ class alignas(64) lite_thread_t {
 					#endif
 					stop = (lt->num == si().thread_count - 1);	// Остановка потока с наибольшим номером
 				} else {
-					#ifdef DEBUG_LT
+					#ifdef _DEBUG
 					printf("%5lld: thread#%d wake up\n", lite_time_now(), lt->num);
+					#endif
+					#ifdef STAT_LT
+					stat_thread_wake_up++;
 					#endif
 				}
 				lt->is_free = false;
 				if (si().worker_free == lt) si().worker_free = NULL;
 				wf = lt;
 				si().worker_free.compare_exchange_weak(wf, NULL);
-				#ifdef STAT_LT
-				stat_thread_wake_up++;
-				#endif
 			}
 			if (stop) break;
 		}
-		#ifdef DEBUG_LT
+		#ifdef _DEBUG
 		printf("%5lld: thread#%d stop\n", lite_time_now(), lt->num);
 		#endif
 
