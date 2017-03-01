@@ -51,7 +51,7 @@ std::atomic<bool> stop_all = { 0 }; // Флаг завершения работ�
 //---------------------------------------------------------------------
 // Многопоточный ГСЧ
 size_t lite_random() {
-	static std::atomic<size_t> n = 0;
+	static std::atomic<size_t> n = {0};
 	size_t old = n;
 	while (!n.compare_exchange_weak(old, old * 1023 + 65537));
 	return old;
