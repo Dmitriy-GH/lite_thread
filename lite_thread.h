@@ -240,18 +240,17 @@ struct lite_msg_t {
 class lite_msg_queue_t {
 	std::queue<lite_msg_t*> queue;	// Очередь сообщений
 	lite_msg_t* msg_one;			// Альтернатива очереди при msg_count == 1
-	std::atomic<int> cnt;			// Сообщений в очереди
+	//std::atomic<int> cnt;			// Сообщений в очереди
 	lite_mutex_t mtx;				// Синхронизация доступа
-
+	bool is_empty;				// Флаг что очередь не пуста
 public:
-	lite_msg_queue_t() : msg_one(NULL), cnt(0) {}
+	lite_msg_queue_t() : msg_one(NULL), is_empty(true) {}
 
 	// Добавление сообщения в очередь, возврашает размер
 	void push(lite_msg_t* msg) noexcept {
 		lite_lock_t lck(mtx); // Блокировка
-		if (cnt == 0) {
+		if (msg_one == NULL) {
 			// 1-е сообщение. Запись в msg_one
-			assert(msg_one == NULL);
 			msg_one = msg;
 		} else {
 			// 2-е сообщение. Запись в очередь
@@ -262,8 +261,8 @@ public:
 			if (stat_queue_max < now) stat_queue_max = now;
 			#endif
 		}
-
-		cnt++;
+		is_empty = false;
+		//cnt++;
 	}
 
 	// Чтение сообщения из очереди
@@ -272,24 +271,22 @@ public:
 		// Чтение первого из msg_one
 		lite_msg_t* msg = msg_one;
 		if (msg != NULL) {
-			cnt--;
 			msg_one = NULL;
+			is_empty = (queue.size() == 0);
 			return msg;
 		}
 		// Чтение из очереди
 		msg = NULL;
-		if (cnt == 0) {
-			assert(queue.size() == 0);
-		} else {
+		if (queue.size() != 0) {
 			msg = queue.front();
 			queue.pop();
-			cnt--;
 		}
+		is_empty = (queue.size() == 0);
 		return msg;
 	}
 
 	int empty() noexcept {
-		return cnt == 0;
+		return is_empty;
 	}
 };
 
@@ -338,14 +335,14 @@ class alignas(64) lite_actor_t {
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
 	std::atomic<lite_msg_t*> msg_end;	// Сообщение об окончании работы
-	std::atomic<bool> in_cache;			// Помещен в кэш планирования запуска
+	bool in_cache;						// Помещен в кэш планирования запуска
 
 	friend lite_thread_t;
 protected:
 
 	//---------------------------------
 	// Конструктор
-	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), msg_end(NULL) {	}
+	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), msg_end(NULL), in_cache(false) {	}
 
 	// Деструктор
 	~lite_actor_t() {
@@ -492,7 +489,7 @@ protected:
 	// Сохранение в кэш указателя на актор ожидающий исполнения
 	void cache_push(lite_actor_t* la) noexcept {
 		assert(la != NULL);
-		if (la->in_cache || !la->is_ready()) return;
+		if (!la->is_ready() || la->in_cache) return;
 
 		if(ti().la_now_run != NULL && ti().la_now_run->msg_queue.empty() && ti().la_next_run == NULL) {
 			// Выпоняется последнее задание текущего актора, запоминаем в локальный кэш для обработки его следующим
