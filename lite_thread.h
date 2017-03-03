@@ -731,12 +731,12 @@ class alignas(64) lite_thread_t {
 		printf("%5lld: thread#%d start\n", lite_time_now(), lt->num);
 		#endif
 		this_num(lt->num);
-		lt->is_free = false;
 		// Цикл обработки сообщений
 		while(true) {
 			// Проверка необходимости и создание новых потоков
 			lite_actor_t* la = lite_actor_t::find_ready();
 			if(la != NULL) { // Есть что обрабатывать
+				lt->is_free = false;
 				si().thread_work++;
 				if (si().thread_work == si().thread_count && !si().stop) create_thread();
 				// Обработка сообщений
@@ -746,6 +746,7 @@ class alignas(64) lite_thread_t {
 				if (stat_parallel_run < t) stat_parallel_run = t;
 				#endif		
 				si().thread_work--;
+				lt->is_free = true;
 			}
 			if (si().stop) break;
 			// Уход в ожидание
@@ -774,12 +775,14 @@ class alignas(64) lite_thread_t {
 					stat_thread_wake_up++;
 					#endif
 				}
-				lt->is_free = false;
 				if (si().worker_free == lt) si().worker_free = NULL;
 				wf = lt;
 				si().worker_free.compare_exchange_weak(wf, NULL);
 			}
-			if (stop) break;
+			if (stop) {
+				lt->is_free = false;
+				break;
+			}
 		}
 		#ifdef _DEBUG
 		printf("%5lld: thread#%d stop\n", lite_time_now(), lt->num);
