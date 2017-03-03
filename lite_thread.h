@@ -86,6 +86,8 @@ std::atomic<uint32_t> stat_thread_wake_up;	// Сколько раз будили
 std::atomic<uint32_t> stat_msg_create;		// Создано сообщений
 std::atomic<uint32_t> stat_actor_get;		// Запросов lite_actor_t* по (func, env)
 std::atomic<uint32_t> stat_actor_find;		// Поиск очередного актора готового к работе
+std::atomic<uint32_t> stat_cache_bad;		// Извлечение из кэша неготового актора
+std::atomic<uint32_t> stat_cache_full;		// Попытка записи в полный кэш
 std::atomic<uint32_t> stat_msg_not_run;		// Промахи обработки сообщения, уже обрабатывается другим потоком
 std::atomic<uint32_t> stat_queue_max;		// Максимальная глубина очереди
 std::atomic<uint32_t> stat_queue_push;		// Счетчик помещения сообщений в очередь
@@ -100,6 +102,8 @@ void print_stat() {
 	printf("msg_create     %u\n", (uint32_t)stat_msg_create);
 	printf("actor_get      %u\n", (uint32_t)stat_actor_get);
 	printf("actor_find     %u\n", (uint32_t)stat_actor_find);
+	printf("cache_bad      %u\n", (uint32_t)stat_cache_bad);
+	printf("cache_full     %u\n", (uint32_t)stat_cache_full);
 	printf("msg_not_run    %u\n", (uint32_t)stat_msg_not_run);
 	printf("queue_max      %u\n", (uint32_t)stat_queue_max);
 	printf("queue_push     %u\n", (uint32_t)stat_queue_push);
@@ -242,7 +246,7 @@ class lite_msg_queue_t {
 public:
 	lite_msg_queue_t() : msg_one(NULL), cnt(0) {}
 
-	// Добавление сообщения в очередь
+	// Добавление сообщения в очередь, возврашает размер
 	void push(lite_msg_t* msg) noexcept {
 		lite_lock_t lck(mtx); // Блокировка
 		if (cnt == 0) {
@@ -258,6 +262,7 @@ public:
 			if (stat_queue_max < now) stat_queue_max = now;
 			#endif
 		}
+
 		cnt++;
 	}
 
@@ -333,6 +338,7 @@ class alignas(64) lite_actor_t {
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
 	std::atomic<lite_msg_t*> msg_end;	// Сообщение об окончании работы
+	std::atomic<bool> in_cache;			// Помещен в кэш планирования запуска
 
 	friend lite_thread_t;
 protected:
@@ -357,6 +363,7 @@ protected:
 
 	// Постановка сообщения в очередь, возврашает true если надо будить другой поток
 	bool push(lite_msg_t* msg) noexcept {
+		//
 		msg_queue.push(msg);
 
 		if (msg == ti().msg_del) {
@@ -367,24 +374,13 @@ protected:
 			ti().need_wake_up = true;
 		}
 
-		bool need_wake_up = ti().need_wake_up;
-		if(actor_free > 0) {
-			// Актор готов запуститься
-			ti().need_wake_up = true;
-			if (ti().la_next_run == NULL) {
-				ti().la_next_run = this;
-			} else {
-				// Есть что выполнять на следующем шаге
-				need_wake_up = true;
-				lite_actor_t* nul = NULL;
-				si().la_next_run.compare_exchange_weak(nul, this);
-			}
-		}
-		return need_wake_up;
+		cache_push(this);
+
+		return ti().need_wake_up;
 	}
 
 	// Запуск обработки сообщения, если не задано то из очереди
-	void run() noexcept {
+	/*void run() noexcept {
 		if (actor_free-- <= 0) {
 			// Уже выполняется разрешенное количество акторов
 			#ifdef STAT_LT
@@ -400,6 +396,7 @@ protected:
 				#endif
 				ti().msg_del = msg; // Пометка на удаление
 				ti().need_wake_up = false;
+				ti().la_now_run = this;
 				la_func.func(msg, la_func.env); // Запуск
 				if (msg == ti().msg_del) lite_msg_t::erase(msg);
 			} else {
@@ -410,13 +407,50 @@ protected:
 		}
 		actor_free++;
 		return;
-	}
+	}*/
 
+	// Запуск обработки всех сообщений очереди
+	void run_all() noexcept {
+		int free_now = --actor_free;
+		if (free_now < 0) {
+			// Уже выполняется разрешенное количество акторов
+			#ifdef STAT_LT
+			stat_msg_not_run++;
+			#endif
+		} else {
+			#ifdef STAT_LT
+			int stat = 0;
+			#endif
+			ti().la_next_run = NULL;
+			ti().la_now_run = this;
+			while (true) {
+				// Извлечение сообщения из очереди
+				lite_msg_t* msg = msg_queue.pop();
+				if (msg == NULL) break;
+				// Запуск функции
+				ti().msg_del = msg; // Пометка на удаление
+				ti().need_wake_up = false;
+				la_func.func(msg, la_func.env); // Запуск
+				if (msg == ti().msg_del) lite_msg_t::erase(msg);
+				#ifdef STAT_LT
+				stat++;
+				#endif
+			}
+			in_cache = false;
+			#ifdef STAT_LT
+			stat_msg_run += stat;
+			if (stat == 0) stat_msg_not_run++;
+			#endif
+		}
+		actor_free++;
+		return;
+	}
 	// static методы уровня потока -------------------------------------------------
 	struct thread_info_t {
 		lite_msg_t* msg_del;		// Обрабатываемое сообщение, будет удалено после обработки
 		bool need_wake_up;			// Необходимо будить другой поток при отправке
 		lite_actor_t* la_next_run;	// Следующий на выполнение актор
+		lite_actor_t* la_now_run;	// Текущий актор
 	};
 
 	// Текущее сообщение в потоке
@@ -455,24 +489,81 @@ protected:
 		si().la_list.clear();
 	}
 
+	// Сохранение в кэш указателя на актор ожидающий исполнения
+	void cache_push(lite_actor_t* la) noexcept {
+		assert(la != NULL);
+		if (la->in_cache || !la->is_ready()) return;
+
+		if(ti().la_now_run != NULL && ti().la_now_run->msg_queue.count() == 0 && ti().la_next_run == NULL) {
+			// Выпоняется последнее задание текущего актора, запоминаем в локальный кэш для обработки его следующим
+			ti().la_next_run = la;
+			return;
+		}
+
+		// Помещение в глобальный кэш
+		lite_actor_t* nul = NULL;
+		if (si().la_next_run == (lite_actor_t*)NULL && si().la_next_run.compare_exchange_weak(nul, la)) {
+			la->in_cache = true;
+			return;
+		} else {
+			// Установка флага пробуждения другого потока
+			ti().need_wake_up = true;
+			#ifdef STAT_LT
+			stat_cache_full++;
+			#endif			
+		}
+	}
+/*	void cache_push(lite_actor_t* la, int msg_cnt) noexcept {
+		assert(la != NULL);
+		if (!la->is_ready()) return;
+		if (ti().la_next_run == NULL) { // Пустой кэш потока
+			ti().la_next_run = la;
+		} else if (si().la_next_run == (lite_actor_t*)NULL) {
+			// Пустой глобальный кэш, перемещение из локального в глобальный, а в локальный la
+			lite_actor_t* nul = NULL;
+			if (si().la_next_run.compare_exchange_weak(nul, ti().la_next_run)) {
+				ti().la_next_run = la;
+			} else {
+				#ifdef STAT_LT
+				stat_cache_full++;
+				#endif			
+			}
+			// Установка флага пробуждения другого потока
+			ti().need_wake_up = true;
+		}
+	}*/
+
+	// Получение из кэша указателя на актор ожидающий исполнения
+	static lite_actor_t* cache_pop() noexcept {
+		// Проверка локального кэша
+		lite_actor_t* la = ti().la_next_run;
+		if (la != NULL) {
+			ti().la_next_run = NULL;
+			if (la->is_ready()) {
+				return la;
+			} else {
+				#ifdef STAT_LT
+				stat_cache_bad++;
+				#endif			
+			}
+		}
+		// Проверка глобального кэша
+		la = si().la_next_run.exchange(NULL);
+		if (la != NULL && la->is_ready()) {
+			return la;
+		//#ifdef STAT_LT
+		//} else if(la != NULL) {
+		//	stat_cache_bad++;
+		//#endif			
+		}
+		return NULL;
+	}
+
 	// Поиск ожидающего выполнение
 	static lite_actor_t* find_ready() noexcept {
 		// Указатель закэшированный  в потоке
-		if (ti().la_next_run != NULL) {
-			lite_actor_t* ret = ti().la_next_run;
-			if(ret->is_ready()) {
-				if (ret->thread_max > 1 || ret->msg_queue.count() == 1) ti().la_next_run = NULL; // Однопоточный актор с очередью планируем на текущий поток
-				return ret;
-			} else {
-				ti().la_next_run = NULL;
-			}
-		}
-
-		// Поиск очередного свободного актора
-		lite_actor_t* ret = si().la_next_run.exchange(NULL);
-		if (ret != NULL && ret->is_ready()) {
-			return ret;
-		}
+		lite_actor_t* ret = cache_pop();
+		if (ret != NULL) return ret;
 
 		#ifdef STAT_LT
 		stat_actor_find++;
@@ -482,13 +573,13 @@ protected:
 		for (lite_actor_cache_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
 			if ((*it)->is_ready()) {
 				ret = (*it);
-				if(it != si().la_list.begin()) {
-					// Сдвиг активных ближе к началу
-					lite_actor_cache_t::iterator it2 = it;
-					it2--;
-					(*it) = (*it2);
-					(*it2) = ret;
-				}
+				//if(it != si().la_list.begin()) {
+				//	// Сдвиг активных ближе к началу
+				//	lite_actor_cache_t::iterator it2 = it;
+				//	it2--;
+				//	(*it) = (*it2);
+				//	(*it2) = ret;
+				//}
 				break;
 			} 
 		}
@@ -633,7 +724,7 @@ class alignas(64) lite_thread_t {
 	static void work_msg(lite_actor_t* la = NULL) noexcept {
 		if (la == NULL) la = lite_actor_t::find_ready();
 		while (la != NULL) {
-			la->run();
+			la->run_all();
 			la = lite_actor_t::find_ready();
 		}
 	}

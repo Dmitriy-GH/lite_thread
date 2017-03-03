@@ -1,5 +1,4 @@
 ﻿// Простейшие примеры использования с выводом всего происходящего в потоках в консоль
-
 #define DEBUG_LT
 #include "../lite_thread.h"
 #include <stdio.h>
@@ -10,9 +9,9 @@
 
 // Эмуляция работы
 void work(int n) {
-	printf("%5d: thread#%d recv %d\n", time_now(), lite_thread_num(), n); // Начало обработки
+	printf("%5lld: thread#%d recv %d\n", lite_time_now(), lite_thread_num(), n); // Начало обработки
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
-	printf("%5d: thread#%d end %d\n", time_now(), lite_thread_num(), n); // Конец
+	printf("%5lld: thread#%d end %d\n", lite_time_now(), lite_thread_num(), n); // Конец
 }
 
 //------------------------------------------------------------------------
@@ -79,7 +78,7 @@ class worker_t {
 
 	// Обработка сообщения TYPE_END (оповещение о завершении работы)
 	void end() {
-		printf("%5d: thread#%d work end. count = %d\n", time_now(), lite_thread_num(), count);
+		printf("%5lld: thread#%d work end. count = %d\n", lite_time_now(), lite_thread_num(), count);
 	}
 
 public:
@@ -111,26 +110,38 @@ public:
 			return;
 
 		default:
-			printf("%5d: thread#%d unknown type %d\n", time_now(), lite_thread_num(), msg->type);
+			printf("%5lld: thread#%d unknown type %d\n", lite_time_now(), lite_thread_num(), msg->type);
 		}
 	}
 };
 
+//----------------------------------------------------------------------------------
+// Работа с таймерами
+//void test4() {
+//	lite_timer_t t;
+//	t.run();
+//	std::this_thread::sleep_for(std::chrono::milliseconds(500));
+//	//t.wait_end();
+//}
 
 int main()
 {
-	printf("%d %d\n", sizeof(lite_actor_t), sizeof(lite_thread_t));
 	printf(" time: thread#N action\n");
 	// Для запуска одного теста закамментить ненужные
-	printf("%5d: --- test 1 ---\n", time_now());
-	test1();
-	std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста
-	printf("%5d: --- test 2 ---\n", time_now());
-	test2();
-	std::this_thread::sleep_for(std::chrono::seconds(3)); // для завершения теста
-	printf("%5d: --- test 3 ---\n", time_now());
+	//printf("%5lld: --- test 1 ---\n", lite_time_now());
+	//test1();
+	//std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста
+	//printf("%5lld: --- test 2 ---\n", lite_time_now());
+	//test2();
+	//std::this_thread::sleep_for(std::chrono::seconds(3)); // для завершения теста
+	//printf("%5lld: --- test 3 ---\n", lite_time_now());
 	worker_t w;
 	std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста
+
+	//lite_timer_t t;
+	//t.run();
+	//std::this_thread::sleep_for(std::chrono::milliseconds(500));
+	//test4();
 	lite_thread_end();
 #ifdef _DEBUG
 	printf("Press any key ...\n");

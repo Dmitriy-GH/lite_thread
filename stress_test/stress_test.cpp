@@ -21,8 +21,8 @@
 #define TEST_TIME	10  // Время теста, сек.
 #endif
 //---------------------------------------------------------------------
-#define DEBUG_LT
-#define STAT_LT
+//#define DEBUG_LT
+//#define STAT_LT
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -52,9 +52,16 @@ std::atomic<bool> stop_all = { 0 }; // Флаг завершения работ�
 // Многопоточный ГСЧ
 size_t lite_random() {
 	static std::atomic<size_t> n = {0};
-	size_t old = n;
-	while (!n.compare_exchange_weak(old, old * 1023 + 65537));
-	return old;
+	thread_local size_t nt = {0};
+	if(nt == 0) {
+		size_t old = n;
+		while (!n.compare_exchange_weak(old, old * 1023 + 65537));
+		nt = old;
+		//printf("init rand\n");
+	} else {
+		nt = nt * 1023 + 65537;
+	}
+	return nt;
 }
 
 //---------------------------------------------------------------------
@@ -127,7 +134,7 @@ class alignas(64) worker_t {
 
 			// Выбор следующего
 			for(size_t i = 0; i < 5; i++) {
-				d->worker_num = rand() % ACTOR_COUNT;
+				d->worker_num = lite_random() % ACTOR_COUNT;
 				if (!d->mark[d->worker_num]) break; // актор d->worker_num не пройден
 			}
 			if(d->mark[d->worker_num]) { // актор d->worker_num пройден
