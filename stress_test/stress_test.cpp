@@ -110,7 +110,7 @@ class alignas(64) worker_t {
 			return;
 		}
 		if(d->worker_num < 0 || d->worker_num >= ACTOR_COUNT) { // Индекс за пределами массива
-			printf("ERROR: worker_num = %d\n", d->worker_num);
+			printf("ERROR: worker_num = %d\n", (int)d->worker_num);
 			stop_all = true;
 			return;
 		}
@@ -175,7 +175,7 @@ class alignas(64) worker_t {
 			return;
 
 		default:
-			printf("ERROR: thread#%d unknown msg type %d\n", lite_thread_num(), msg->type);
+			printf("ERROR: thread#%d unknown msg type %d\n", (int)lite_thread_num(), msg->type);
 			stop_all = true;
 		}
 	}
@@ -243,7 +243,7 @@ void finish_func(lite_msg_t* msg, void* env) {
 		if (d->mark[i]) count++;
 	}
 	if(count != STEP_COUNT) {
-		printf("ERROR: skipped %d actors\n", ACTOR_COUNT - count);
+		printf("ERROR: skipped %d actors\n", (int)(ACTOR_COUNT - count));
 		stop_all = true;
 		return;
 	}

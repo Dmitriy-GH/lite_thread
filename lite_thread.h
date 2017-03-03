@@ -462,11 +462,9 @@ protected:
 
 	struct static_info_t {
 		lite_actor_list_t la_idx;	// Индекс для поиска lite_actor_t*
-		//lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
-		std::shared_mutex mtx_idx;	// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
+		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
 		lite_actor_cache_t la_list; // Кэш списка акторов
-		//lite_mutex_t mtx_list;	// Блокировка для доступа к la_list
-		std::shared_mutex mtx_list;	// Блокировка для доступа к la_list
+		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
 		std::atomic<lite_actor_t*> la_next_run;	// Следующий на выполнение актор
 	};
 
@@ -477,10 +475,8 @@ protected:
 
 	// Очистка всего
 	static void clear() noexcept {
-		//lite_lock_t lck(si().mtx_idx); // Блокировка
-		std::unique_lock<std::shared_mutex> lck(si().mtx_idx); // Блокировка
-		//lite_lock_t lck2(si().mtx_list); // Блокировка
-		std::unique_lock<std::shared_mutex> lck2(si().mtx_list); // Блокировка
+		lite_lock_t lck(si().mtx_idx); // Блокировка
+		lite_lock_t lck2(si().mtx_list); // Блокировка
 
 		for(auto& a : si().la_list) {
 			delete a;
@@ -569,8 +565,7 @@ protected:
 		stat_actor_find++;
 		#endif
 
-		std::shared_lock<std::shared_mutex> lck2(si().mtx_list); // Блокировка
-		//lite_lock_t lck(si().mtx_list); // Блокировка
+		lite_lock_t lck(si().mtx_list); // Блокировка
 		for (lite_actor_cache_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
 			if ((*it)->is_ready()) {
 				ret = (*it);
@@ -594,23 +589,17 @@ public: //-------------------------------------------------------------
 		stat_actor_get++;
 		#endif
 		lite_actor_func_t a(func, env);
-		lite_actor_t* la = NULL;
-		{
-			//lite_lock_t lck(si().mtx_idx); // Блокировка
-			std::shared_lock<std::shared_mutex> lck(si().mtx_idx); // Блокировка
 
-			lite_actor_list_t::iterator it = si().la_idx.find(a); // Поиск по индексу
-			if (it != si().la_idx.end()) {
-				la = it->second;
-			} 
-		}
-		if(la == NULL) {
+		lite_lock_t lck(si().mtx_idx); // Блокировка
+		lite_actor_list_t::iterator it = si().la_idx.find(a); // Поиск по индексу
+		lite_actor_t* la;
+		if (it != si().la_idx.end()) {
+			la = it->second;
+		} else {
 			// Добавление
-			std::unique_lock<std::shared_mutex> lck(si().mtx_idx); // Блокировка
 			la = new lite_actor_t(a);
 			si().la_idx[a] = la;
-			//lite_lock_t lck2(si().mtx_list); // Блокировка
-			std::unique_lock<std::shared_mutex> lck2(si().mtx_list); // Блокировка
+			lite_lock_t lck2(si().mtx_list); // Блокировка
 			si().la_list.push_back(la);
 		}
 		return la;
@@ -654,8 +643,7 @@ class alignas(64) lite_thread_t {
 	struct static_info_t {
 		std::vector<lite_thread_t*> worker_list;	// Массив описателей потоков
 		std::atomic<lite_thread_t*> worker_free = {0}; // Указатель на свободный поток
-		//lite_mutex_t mtx;							// Блокировка доступа к массиву потоков
-		std::shared_mutex mtx;						// Блокировка доступа к массиву потоков
+		lite_mutex_t mtx;							// Блокировка доступа к массиву потоков
 		std::atomic<bool> stop = {0};				// Флаг остановки всех потоков
 		std::atomic<size_t> thread_count = { 0 };	// Количество потоков
 		std::atomic<size_t> thread_work = { 0 };	// Количество работающих потоков
@@ -672,8 +660,7 @@ class alignas(64) lite_thread_t {
 	static void create_thread() noexcept {
 		lite_thread_t* lt;
 		{
-			//lite_lock_t lck(si().mtx); // Блокировка
-			std::unique_lock<std::shared_mutex> lck(si().mtx); // Блокировка
+			lite_lock_t lck(si().mtx); // Блокировка
 			size_t num = si().thread_count;
 			si().thread_count++;
 			if (si().worker_list.size() == num) {
@@ -703,8 +690,7 @@ class alignas(64) lite_thread_t {
 
 		if (si().thread_count == 0) return NULL;
 
-		//lite_lock_t lck(si().mtx); // Блокировка
-		std::shared_lock<std::shared_mutex> lck(si().mtx); // Блокировка
+		lite_lock_t lck(si().mtx); // Блокировка
 		size_t max = si().thread_count;
 		assert(max <= si().worker_list.size());
 
@@ -802,8 +788,7 @@ class alignas(64) lite_thread_t {
 		printf("%5lld: thread#%d stop\n", lite_time_now(), lt->num);
 		#endif
 
-		//lite_lock_t lck(si().mtx); // Блокировка
-		std::shared_lock<std::shared_mutex> lck(si().mtx); // Блокировка
+		lite_lock_t lck(si().mtx); // Блокировка
 		lt->is_end = true;
 		si().thread_count--;
 		si().cv_end.notify_one();
@@ -833,8 +818,7 @@ public: //-------------------------------------
 		while(true) { // Ожидание остановки всех потоков
 			bool is_end = true;
 			{
-				//lite_lock_t lck(si().mtx); // Блокировка
-				std::shared_lock<std::shared_mutex> lck(si().mtx); // Блокировка
+				lite_lock_t lck(si().mtx); // Блокировка
 				for (auto& w : si().worker_list) {
 					if(!w->is_end) { // Поток не завершился
 						w->cv.notify_one(); // Пробуждение потока
@@ -851,7 +835,6 @@ public: //-------------------------------------
 		}
 		assert(si().thread_count == 0);
 		// Очистка памяти
-		std::unique_lock<std::shared_mutex> lck(si().mtx); // Блокировка
 		for (auto& w : si().worker_list) {
 			delete w;
 			w = NULL;
@@ -940,7 +923,6 @@ static void lite_msg_end(lite_msg_t* msg, lite_actor_t* la) noexcept {
 static void lite_msg_end(lite_msg_t* msg, lite_func_t func, void* env = NULL) noexcept {
 	lite_actor_t::actor_end(msg, lite_actor_t::get(func, env));
 }
-
 // Завершение с ожиданием всех
 static void lite_thread_end() noexcept {
 	lite_thread_t::end();
