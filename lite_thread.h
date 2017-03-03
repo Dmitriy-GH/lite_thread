@@ -240,7 +240,6 @@ struct lite_msg_t {
 class lite_msg_queue_t {
 	std::queue<lite_msg_t*> queue;	// Очередь сообщений
 	lite_msg_t* msg_one;			// Альтернатива очереди при msg_count == 1
-	//std::atomic<int> cnt;			// Сообщений в очереди
 	lite_mutex_t mtx;				// Синхронизация доступа
 	bool is_empty;				// Флаг что очередь не пуста
 public:
@@ -249,7 +248,7 @@ public:
 	// Добавление сообщения в очередь, возврашает размер
 	void push(lite_msg_t* msg) noexcept {
 		lite_lock_t lck(mtx); // Блокировка
-		if (msg_one == NULL) {
+		if (msg_one == NULL && queue.size() == 0) {
 			// 1-е сообщение. Запись в msg_one
 			msg_one = msg;
 		} else {
@@ -257,7 +256,7 @@ public:
 			queue.push(msg);
 			#ifdef STAT_LT
 			stat_queue_push++;
-			uint32_t now = cnt + 1;
+			uint32_t now = queue.size() + (msg_one == NULL ? 0 : 1);
 			if (stat_queue_max < now) stat_queue_max = now;
 			#endif
 		}
