@@ -569,13 +569,13 @@ protected:
 		for (lite_actor_cache_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
 			if ((*it)->is_ready()) {
 				ret = (*it);
-				//if(it != si().la_list.begin()) {
-				//	// Сдвиг активных ближе к началу
-				//	lite_actor_cache_t::iterator it2 = it;
-				//	it2--;
-				//	(*it) = (*it2);
-				//	(*it2) = ret;
-				//}
+				if(it != si().la_list.begin()) {
+					// Сдвиг активных ближе к началу
+					lite_actor_cache_t::iterator it2 = it;
+					it2--;
+					(*it) = (*it2);
+					(*it2) = ret;
+				}
 				break;
 			} 
 		}
