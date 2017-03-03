@@ -288,8 +288,8 @@ public:
 		return msg;
 	}
 
-	int count() noexcept {
-		return cnt;
+	int empty() noexcept {
+		return cnt == 0;
 	}
 };
 
@@ -358,7 +358,7 @@ protected:
 
 	// Проверка готовности к запуску
 	bool is_ready() noexcept {
-		return (msg_queue.count() > 0 && actor_free > 0);
+		return (!msg_queue.empty() && actor_free > 0);
 	}
 
 	// Постановка сообщения в очередь, возврашает true если надо будить другой поток
@@ -494,7 +494,7 @@ protected:
 		assert(la != NULL);
 		if (la->in_cache || !la->is_ready()) return;
 
-		if(ti().la_now_run != NULL && ti().la_now_run->msg_queue.count() == 0 && ti().la_next_run == NULL) {
+		if(ti().la_now_run != NULL && ti().la_now_run->msg_queue.empty() && ti().la_next_run == NULL) {
 			// Выпоняется последнее задание текущего актора, запоминаем в локальный кэш для обработки его следующим
 			ti().la_next_run = la;
 			return;
