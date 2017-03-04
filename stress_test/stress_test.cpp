@@ -20,6 +20,8 @@
 #else
 #define TEST_TIME	10  // Время теста, сек.
 #endif
+
+#define CPU_MAX 8 // Максимальное количество одновременно работающих потоков
 //---------------------------------------------------------------------
 //#define DEBUG_LT
 #define STAT_LT
@@ -188,6 +190,7 @@ public:
 		// Регистрация оповещения об остановке. Будет получено перед окончанием работы приложения.
 		lite_msg_t* msg_end = lite_msg_create(0, TYPE_END); // Создание сообщения об окончании работы
 		lite_msg_end(msg_end, i_am); // Регистрация сообщения об окончании работы
+		// Ограничение на количество ядер
 	}
 
 	// Указатель на обработчик
@@ -273,6 +276,14 @@ int main()
 	lite_actor_parallel(5, start);
 	finish = lite_actor_get(finish_func);
 	lite_actor_parallel(5, finish);
+
+	// Установка ресурса "CPU"
+	lite_resource_t* res = lite_resource_create("CPU", CPU_MAX);
+	for (size_t i = 0; i < ACTOR_COUNT; i++) {
+		worker_list[i].handle()->resource_set(res);
+	}
+	lite_resource_set("CPU", start);
+	lite_resource_set("CPU", finish);
 
 	// Создание сообщений
 	for(size_t i = 0; i < MSG_COUNT; i++) {

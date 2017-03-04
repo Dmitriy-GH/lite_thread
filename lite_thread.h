@@ -67,6 +67,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <unordered_map>
+#include <string>
 #include <assert.h>
 #include <time.h>
 
@@ -80,7 +81,7 @@
 // Счетчики для отладки
 struct lite_thread_stat_t {
 	alignas(64) std::atomic<size_t> stat_thread_max;		// Максимальное количество потоков запущенных одновременно
-	alignas(64) std::atomic<size_t> stat_parallel_run;		// Максимальное количество потоков работавших параллельно
+	alignas(64) std::atomic<size_t> stat_parallel_run;		// Максимальное количество потоков работавших одновременно
 	alignas(64) std::atomic<size_t> stat_thread_create;		// Создано потоков
 	alignas(64) std::atomic<size_t> stat_thread_wake_up;	// Сколько раз будились потоки
 	alignas(64) std::atomic<size_t> stat_msg_create;		// Создано сообщений
@@ -88,11 +89,11 @@ struct lite_thread_stat_t {
 	alignas(64) std::atomic<size_t> stat_actor_find;		// Поиск очередного актора готового к работе
 	alignas(64) std::atomic<size_t> stat_cache_bad;			// Извлечение из кэша неготового актора
 	alignas(64) std::atomic<size_t> stat_cache_full;		// Попытка записи в полный кэш
+	alignas(64) std::atomic<size_t> stat_res_lock;			// Количество блокировок ресурсов
 	alignas(64) std::atomic<size_t> stat_msg_not_run;		// Промахи обработки сообщения, уже обрабатывается другим потоком
 	alignas(64) std::atomic<size_t> stat_queue_max;			// Максимальная глубина очереди
 	alignas(64) std::atomic<size_t> stat_queue_push;		// Счетчик помещения сообщений в очередь
 	alignas(64) std::atomic<size_t> stat_msg_run;			// Обработано сообщений
-
 	static void print_stat() {
 		printf("\n------- STAT -------\n");
 		printf("thread_max     %llu\n", (uint64_t)si().stat_thread_max);
@@ -104,6 +105,7 @@ struct lite_thread_stat_t {
 		printf("actor_find     %llu\n", (uint64_t)si().stat_actor_find);
 		printf("cache_bad      %llu\n", (uint64_t)si().stat_cache_bad);
 		printf("cache_full     %llu\n", (uint64_t)si().stat_cache_full);
+		printf("resource_lock  %llu\n", (uint64_t)si().stat_res_lock);
 		printf("msg_not_run    %llu\n", (uint64_t)si().stat_msg_not_run);
 		printf("queue_max      %llu\n", (uint64_t)si().stat_queue_max);
 		printf("queue_push     %llu\n", (uint64_t)si().stat_queue_push);
@@ -306,6 +308,92 @@ public:
 };
 
 //----------------------------------------------------------------------------------
+//------ РЕСУРС --------------------------------------------------------------------
+//----------------------------------------------------------------------------------
+
+class alignas(64) lite_resource_t {
+	std::atomic<int> res_free; // Свободное количество
+	int res_max; // Максимум
+	#ifdef STAT_LT
+	size_t cnt_lock;
+	#endif
+public:
+	lite_resource_t(int max) : res_free(max), res_max(max) {
+		#ifdef STAT_LT
+		cnt_lock = 0;
+		#endif
+	}
+	
+	~lite_resource_t() {
+		assert(res_free == res_max);
+		#ifdef STAT_LT
+		lite_thread_stat_t::si().stat_res_lock += cnt_lock;
+		#endif
+	}
+
+	// Захват ресурса, возвращает true при успехе
+	bool lock() {
+		#ifdef STAT_LT
+		cnt_lock++;
+		#endif
+		if(res_free-- <= 0) {
+			res_free++;
+			return false;
+		} else {
+			return true;
+		}
+	}
+
+	// Освобождение ресурса
+	void unlock() {
+		res_free++;
+	}
+
+	// Количество свободных ресурсов
+	bool free() {
+		return res_free > 0;
+	}
+
+	// static методы глобальные ----------------------------------------------------
+	typedef std::unordered_map<std::string, lite_resource_t*> lite_resource_list_t;
+
+	struct static_info_t {
+		lite_resource_list_t lr_idx; // Индекс списка ресурсов
+		lite_mutex_t mtx;			// Блокировка для доступа к lr_idx
+	};
+
+	static static_info_t& si() noexcept {
+		static static_info_t x;
+		return x;
+	}
+
+	// Создание нового ресурса. max емкость ресурса, при получении указателя на имеющийся можно не указывать
+	static lite_resource_t* get(const std::string& name, int max = 0) {
+		lite_lock_t lck(si().mtx);
+		lite_resource_list_t::iterator it = si().lr_idx.find(name); // Поиск по индексу
+		lite_resource_t* lr = NULL;
+		if (it != si().lr_idx.end()) {
+			lr = it->second;
+			if (max != 0) assert(lr->res_max == max);
+		} else {
+			assert(max != 0);
+			lr = new lite_resource_t(max);
+			si().lr_idx[name] = lr;
+		}
+		return lr;
+	}
+
+	// Очистка памяти
+	static void clear() {
+		lite_lock_t lck(si().mtx);
+		for (auto& it : si().lr_idx) {
+			delete it.second;
+		}
+		si().lr_idx.clear();
+	}
+};
+
+//----------------------------------------------------------------------------------
 //------ ОБРАБОТЧИК (АКТОР) --------------------------------------------------------
 //----------------------------------------------------------------------------------
 // Функция актора
@@ -345,6 +433,7 @@ namespace std {
 // Актор (функция + очередь сообщений)
 class alignas(64) lite_actor_t {
 
+	lite_resource_t* resource;			// Ресурс, используемый актором
 	lite_msg_queue_t msg_queue;			// Очередь сообщений
 	lite_actor_func_t la_func;			// Функция с окружением
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
@@ -361,7 +450,7 @@ protected:
 
 	//---------------------------------
 	// Конструктор
-	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), msg_end(NULL), in_cache(false) {	
+	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), msg_end(NULL), in_cache(false), resource(NULL) {
 		#ifdef STAT_LT
 		cnt_msg_run = 0;
 		cnt_cache_full = 0;
@@ -383,56 +472,22 @@ protected:
 
 	// Проверка готовности к запуску
 	bool is_ready() noexcept {
-		return (!msg_queue.empty() && actor_free > 0);
+		//return (!msg_queue.empty() && actor_free > 0);
+		return (!msg_queue.empty() && actor_free > 0 && (resource == NULL || resource == ti().lr_now_used || resource->free()));
 	}
 
 	// Постановка сообщения в очередь, возврашает true если надо будить другой поток
-	bool push(lite_msg_t* msg) noexcept {
+	void push(lite_msg_t* msg) noexcept {
 		//
 		msg_queue.push(msg);
 
 		if (msg == ti().msg_del) {
 			// Помеченное на удаление сообщение поместили в очередь другого актора. Снятие пометки
 			ti().msg_del = NULL;
-		} else if (ti().msg_del == NULL) {
-			// Не было предыдушего сообщения, отправка из чужого потока
-			ti().need_wake_up = true;
 		}
 
 		cache_push(this);
-
-		return ti().need_wake_up;
 	}
-
-	// Запуск обработки сообщения, если не задано то из очереди
-	/*void run() noexcept {
-		if (actor_free-- <= 0) {
-			// Уже выполняется разрешенное количество акторов
-			#ifdef STAT_LT
-			stat_msg_not_run++;
-			#endif
-		} else {
-			// Извлечение сообщения из очереди
-			lite_msg_t* msg =  msg_queue.pop();
-
-			if (msg != NULL) { // Запуск функции
-				#ifdef STAT_LT
-				stat_msg_run++;
-				#endif
-				ti().msg_del = msg; // Пометка на удаление
-				ti().need_wake_up = false;
-				ti().la_now_run = this;
-				la_func.func(msg, la_func.env); // Запуск
-				if (msg == ti().msg_del) lite_msg_t::erase(msg);
-			} else {
-				#ifdef STAT_LT
-				stat_msg_not_run++;
-				#endif
-			}
-		}
-		actor_free++;
-		return;
-	}*/
 
 	// Запуск обработки всех сообщений очереди
 	void run_all() noexcept {
@@ -442,7 +497,7 @@ protected:
 			#ifdef STAT_LT
 			lite_thread_stat_t::si().stat_msg_not_run++;
 			#endif
-		} else {
+		} else if (resource_lock(resource)) { // Занимаем ресурс
 			ti().la_next_run = NULL;
 			ti().la_now_run = this;
 			while (true) {
@@ -463,12 +518,14 @@ protected:
 		actor_free++;
 		return;
 	}
+
 	// static методы уровня потока -------------------------------------------------
 	struct thread_info_t {
 		lite_msg_t* msg_del;		// Обрабатываемое сообщение, будет удалено после обработки
 		bool need_wake_up;			// Необходимо будить другой поток при отправке
 		lite_actor_t* la_next_run;	// Следующий на выполнение актор
 		lite_actor_t* la_now_run;	// Текущий актор
+		lite_resource_t* lr_now_used;// Текущий захваченный ресурс
 	};
 
 	// Текущее сообщение в потоке
@@ -495,41 +552,40 @@ protected:
 		return x;
 	}
 
-	// Очистка всего
-	static void clear() noexcept {
-		lite_lock_t lck(si().mtx_idx); // Блокировка
-		lite_lock_t lck2(si().mtx_list); // Блокировка
-
-		for(auto& a : si().la_list) {
-			delete a;
-		}
-		si().la_idx.clear();
-		si().la_list.clear();
-	}
-
 	// Сохранение в кэш указателя на актор ожидающий исполнения
 	void cache_push(lite_actor_t* la) noexcept {
 		assert(la != NULL);
 		if (!la->is_ready() || la->in_cache) return;
 
-		if(ti().la_now_run != NULL && ti().la_now_run->msg_queue.empty() && ti().la_next_run == NULL) {
+		if(ti().la_now_run != NULL && ti().la_now_run->msg_queue.empty()) {
 			// Выпоняется последнее задание текущего актора, запоминаем в локальный кэш для обработки его следующим
-			ti().la_next_run = la;
-			return;
+			if(ti().la_next_run == NULL || !ti().la_next_run->is_ready()) {
+				ti().la_next_run = la;
+				return;
+			} else if(ti().lr_now_used != NULL && la->resource == ti().lr_now_used && ti().la_next_run->resource != ti().lr_now_used) {
+				// la того же ресурса, который сейчас используется
+				lite_actor_t* t = ti().la_next_run;
+				ti().la_next_run = la;
+				la = t;
+			}
+
 		}
+
+		// Проверка есть ли ресурс
+		if (la->resource != NULL && !la->resource->free()) return;
 
 		// Помещение в глобальный кэш
 		lite_actor_t* nul = NULL;
 		if (si().la_next_run == (lite_actor_t*)NULL && si().la_next_run.compare_exchange_weak(nul, la)) {
 			la->in_cache = true;
-			return;
 		} else {
 			// Установка флага пробуждения другого потока
-			ti().need_wake_up = true;
 			#ifdef STAT_LT
 			la->cnt_cache_full++;
 			#endif			
 		}
+		if (!ti().need_wake_up) ti().need_wake_up = (la->resource == NULL || la->resource->free());
+		//if (ti().need_wake_up) assert(lite_resource_t::get("CPU")->free());
 	}
 /*	void cache_push(lite_actor_t* la, int msg_cnt) noexcept {
 		assert(la != NULL);
@@ -571,10 +627,6 @@ protected:
 			la = si().la_next_run.exchange(NULL);
 			if (la != NULL && la->is_ready()) {
 				return la;
-			//#ifdef STAT_LT
-			//} else if(la != NULL) {
-			//	stat_cache_bad++;
-			//#endif			
 			}
 		}
 		return NULL;
@@ -605,6 +657,38 @@ protected:
 			} 
 		}
 		return ret;
+	}
+
+	// Захват и освобождение ресурса
+	static bool resource_lock(lite_resource_t* res) {
+		// Проверка что уже захвачен
+		if (res == ti().lr_now_used) return true;
+		// Освобождение ранее захваченного
+		if (ti().lr_now_used != NULL) ti().lr_now_used->unlock();
+		ti().lr_now_used = NULL;
+		// Захват нового
+		if(res == NULL || res->lock()) {
+			ti().lr_now_used = res;
+			return true;
+		} else {
+			return false;
+		}
+	}
+
+	static bool need_wake_up() {
+		return ti().need_wake_up;
+	}
+
+	// Очистка всего
+	static void clear() noexcept {
+		lite_lock_t lck(si().mtx_idx); // Блокировка
+		lite_lock_t lck2(si().mtx_list); // Блокировка
+
+		for (auto& a : si().la_list) {
+			delete a;
+		}
+		si().la_idx.clear();
+		si().la_list.clear();
 	}
 
 public: //-------------------------------------------------------------
@@ -648,6 +732,14 @@ public: //-------------------------------------------------------------
 	static void actor_end(lite_msg_t* msg, lite_actor_t* la) noexcept {
 		la->msg_end = msg;
 	}
+
+	// Установка сообщения об окончании работы
+	void resource_set(lite_resource_t* res) noexcept {
+		assert(resource == NULL); // Контроль повторной установки ресурса
+		resource = res;
+	}
+
+
 };
 
 //----------------------------------------------------------------------------------
@@ -658,8 +750,8 @@ class alignas(64) lite_thread_t {
 	size_t num;					// Номер потока
 	std::mutex mtx_sleep;		// Для засыпания
 	std::condition_variable cv;	// Для засыпания
-	bool is_free;	// Поток свободен
-	bool is_end;	// Поток завершен
+	bool is_free;				// Поток свободен
+	bool is_end;				// Поток завершен
 
 	// Конструктор
 	lite_thread_t(size_t num) : num(num), is_free(true), is_end(false) { }
@@ -709,11 +801,11 @@ class alignas(64) lite_thread_t {
 
 	// Поиск свободного потока
 	static lite_thread_t* find_free() noexcept {
-		lite_thread_t* wf = si().worker_free.exchange(NULL);
+		lite_thread_t* wf = si().worker_free;
 		if(wf != NULL && wf->is_free) return wf;
 
 		if (si().thread_count == 0) return NULL;
-
+		wf = NULL;
 		lite_lock_t lck(si().mtx); // Блокировка
 		size_t max = si().thread_count;
 		assert(max <= si().worker_list.size());
@@ -763,6 +855,7 @@ class alignas(64) lite_thread_t {
 			la->run_all();
 			la = lite_actor_t::find_ready();
 		}
+		lite_actor_t::resource_lock(NULL);
 	}
 
 	// Функция потока
@@ -777,11 +870,8 @@ class alignas(64) lite_thread_t {
 			lite_actor_t* la = lite_actor_t::find_ready();
 			if(la != NULL) { // Есть что обрабатывать
 				lt->is_free = false;
-				//si().thread_work++;
-				//if (si().thread_work == si().thread_count && !si().stop) create_thread();
 				// Обработка сообщений
 				work_msg(la);
-				//si().thread_work--;
 				lt->is_free = true;
 			}
 			if (si().stop) break;
@@ -833,7 +923,8 @@ class alignas(64) lite_thread_t {
 public: //-------------------------------------
 	// Помещение в очередь для последующего запуска
 	static void run(lite_msg_t* msg, lite_actor_t* la) noexcept {
-		if ((la->push(msg) && la->is_ready())) wake_up();
+		la->push(msg);
+		if (lite_actor_t::need_wake_up() || si().thread_count == 0) wake_up();
 	}
 
 	// Завершение, ожидание всех потоков
@@ -879,6 +970,8 @@ public: //-------------------------------------
 		work_msg();
 		// Очистка памяти под акторы
 		lite_actor_t::clear();
+		// Очистка памяти под ресурсы
+		lite_resource_t::clear();
 		#ifdef STAT_LT
 		lite_thread_stat_t::si().print_stat();
 		#endif		
@@ -969,3 +1062,16 @@ static size_t lite_thread_num() noexcept {
 	return lite_thread_t::this_num();
 }
 
+// Создание ресурса
+static lite_resource_t* lite_resource_create(const std::string& name, int max) noexcept {
+	return lite_resource_t::get(name, max);
+}
+
+// Привязка актора к ресурсу
+static void lite_resource_set(const std::string& name, lite_actor_t* la) noexcept {
+	la->resource_set(lite_resource_t::get(name));
+}
+
+static void lite_resource_set(const std::string& name, lite_func_t func, void* env = NULL) noexcept {
+	lite_actor_t::get(func, env)->resource_set(lite_resource_t::get(name));
+}
