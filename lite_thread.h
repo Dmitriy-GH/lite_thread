@@ -79,19 +79,19 @@
 #ifdef STAT_LT
 // Счетчики для отладки
 struct lite_thread_stat_t {
-	std::atomic<size_t> stat_thread_max;		// Максимальное количество потоков запущенных одновременно
-	std::atomic<size_t> stat_parallel_run;		// Максимальное количество потоков работавших параллельно
-	std::atomic<size_t> stat_thread_create;		// Создано потоков
-	std::atomic<size_t> stat_thread_wake_up;	// Сколько раз будились потоки
-	std::atomic<size_t> stat_msg_create;		// Создано сообщений
-	std::atomic<size_t> stat_actor_get;			// Запросов lite_actor_t* по (func, env)
-	std::atomic<size_t> stat_actor_find;		// Поиск очередного актора готового к работе
-	std::atomic<size_t> stat_cache_bad;			// Извлечение из кэша неготового актора
-	std::atomic<size_t> stat_cache_full;		// Попытка записи в полный кэш
-	std::atomic<size_t> stat_msg_not_run;		// Промахи обработки сообщения, уже обрабатывается другим потоком
-	std::atomic<size_t> stat_queue_max;			// Максимальная глубина очереди
-	std::atomic<size_t> stat_queue_push;		// Счетчик помещения сообщений в очередь
-	std::atomic<size_t> stat_msg_run;			// Обработано сообщений
+	alignas(64) std::atomic<size_t> stat_thread_max;		// Максимальное количество потоков запущенных одновременно
+	alignas(64) std::atomic<size_t> stat_parallel_run;		// Максимальное количество потоков работавших параллельно
+	alignas(64) std::atomic<size_t> stat_thread_create;		// Создано потоков
+	alignas(64) std::atomic<size_t> stat_thread_wake_up;	// Сколько раз будились потоки
+	alignas(64) std::atomic<size_t> stat_msg_create;		// Создано сообщений
+	alignas(64) std::atomic<size_t> stat_actor_get;			// Запросов lite_actor_t* по (func, env)
+	alignas(64) std::atomic<size_t> stat_actor_find;		// Поиск очередного актора готового к работе
+	alignas(64) std::atomic<size_t> stat_cache_bad;			// Извлечение из кэша неготового актора
+	alignas(64) std::atomic<size_t> stat_cache_full;		// Попытка записи в полный кэш
+	alignas(64) std::atomic<size_t> stat_msg_not_run;		// Промахи обработки сообщения, уже обрабатывается другим потоком
+	alignas(64) std::atomic<size_t> stat_queue_max;			// Максимальная глубина очереди
+	alignas(64) std::atomic<size_t> stat_queue_push;		// Счетчик помещения сообщений в очередь
+	alignas(64) std::atomic<size_t> stat_msg_run;			// Обработано сообщений
 
 	static void print_stat() {
 		printf("\n------- STAT -------\n");
@@ -108,6 +108,7 @@ struct lite_thread_stat_t {
 		printf("queue_max      %llu\n", (uint64_t)si().stat_queue_max);
 		printf("queue_push     %llu\n", (uint64_t)si().stat_queue_push);
 		printf("msg_run        %llu\n", (uint64_t)si().stat_msg_run);
+		printf("\n");
 	}
 
 	static lite_thread_stat_t& si() noexcept {
@@ -486,7 +487,7 @@ protected:
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
 		lite_actor_cache_t la_list; // Кэш списка акторов
 		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
-		std::atomic<lite_actor_t*> la_next_run;	// Следующий на выполнение актор
+		alignas(64) std::atomic<lite_actor_t*> la_next_run;	// Следующий на выполнение актор
 	};
 
 	static static_info_t& si() noexcept {
@@ -655,22 +656,21 @@ public: //-------------------------------------------------------------
 
 class alignas(64) lite_thread_t {
 	size_t num;					// Номер потока
-	std::atomic<bool> is_free;	// Поток свободен
 	std::mutex mtx_sleep;		// Для засыпания
 	std::condition_variable cv;	// Для засыпания
-	std::atomic<bool> is_end;	// Поток зевершен
+	bool is_free;	// Поток свободен
+	bool is_end;	// Поток завершен
 
 	// Конструктор
 	lite_thread_t(size_t num) : num(num), is_free(true), is_end(false) { }
 
 	// Общие данные всех потоков
 	struct static_info_t {
+		alignas(64) std::atomic<lite_thread_t*> worker_free = { 0 }; // Указатель на свободный поток
 		std::vector<lite_thread_t*> worker_list;	// Массив описателей потоков
 		std::atomic<size_t> thread_count;			// Количество запущеных потоков
-		std::atomic<lite_thread_t*> worker_free = {0}; // Указатель на свободный поток
 		lite_mutex_t mtx;							// Блокировка доступа к массиву потоков
 		std::atomic<bool> stop = {0};				// Флаг остановки всех потоков
-		std::atomic<size_t> thread_work = { 0 };	// Количество работающих потоков
 		std::mutex mtx_end;							// Для ожидания завершения потоков
 		std::condition_variable cv_end;				// Для ожидания завершения потоков
 	};
@@ -730,6 +730,22 @@ class alignas(64) lite_thread_t {
 		return wf;
 	}
 
+	// Подсчет работающих потоков
+	static size_t thread_work() noexcept {
+		lite_lock_t lck(si().mtx); // Блокировка
+		size_t max = si().thread_count;
+		assert(max <= si().worker_list.size());
+
+		size_t ret = 0;
+		for (size_t i = 0; i < max; i++) {
+			if (!si().worker_list[i]->is_free) ret++;
+		}
+		#ifdef STAT_LT
+		if (lite_thread_stat_t::si().stat_parallel_run < ret) lite_thread_stat_t::si().stat_parallel_run = ret;
+		#endif		
+		return ret;
+	}
+
 	// Пробуждение свободного потока
 	static void wake_up() noexcept {
 		lite_thread_t* wf = find_free();
@@ -761,15 +777,11 @@ class alignas(64) lite_thread_t {
 			lite_actor_t* la = lite_actor_t::find_ready();
 			if(la != NULL) { // Есть что обрабатывать
 				lt->is_free = false;
-				si().thread_work++;
-				if (si().thread_work == si().thread_count && !si().stop) create_thread();
+				//si().thread_work++;
+				//if (si().thread_work == si().thread_count && !si().stop) create_thread();
 				// Обработка сообщений
 				work_msg(la);
-				#ifdef STAT_LT
-				size_t t = si().thread_work;
-				if (lite_thread_stat_t::si().stat_parallel_run < t) lite_thread_stat_t::si().stat_parallel_run = t;
-				#endif		
-				si().thread_work--;
+				//si().thread_work--;
 				lt->is_free = true;
 			}
 			if (si().stop) break;
@@ -779,7 +791,7 @@ class alignas(64) lite_thread_t {
 				#ifdef _DEBUG
 				printf("%5lld: thread#%d sleep\n", lite_time_now(), (int)lt->num);
 				#endif
-				if(si().thread_work == 0) si().cv_end.notify_one(); // Если никто не работает, то разбудить ожидание завершения
+				if(thread_work() == 0) si().cv_end.notify_one(); // Если никто не работает, то разбудить ожидание завершения
 				lite_thread_t* wf = si().worker_free;
 				while(wf == NULL || wf->num > lt->num) { // Следующим будить поток с меньшим номером
 					si().worker_free.compare_exchange_weak(wf, lt);
@@ -788,7 +800,7 @@ class alignas(64) lite_thread_t {
 				lt->is_free = true;
 				if(lt->cv.wait_for(lck, std::chrono::seconds(1)) == std::cv_status::timeout) {	// Проснулся по таймауту
 					#ifdef DEBUG_LT
-					printf("%5lld: thread#%d wake up (total: %d, work: %d)\n", lite_time_now(), (int)lt->num, (int)si().thread_count, (int)si().thread_work);
+					printf("%5lld: thread#%d wake up (total: %d, work: %d)\n", lite_time_now(), (int)lt->num, (int)si().thread_count, (int)thread_work());
 					#endif
 					stop = (lt->num == si().thread_count - 1);	// Остановка потока с наибольшим номером
 				} else {
@@ -830,7 +842,7 @@ public: //-------------------------------------
 		printf("%5lld: --- wait all ---\n", lite_time_now());
 		#endif	
 		// Ожидание завершения расчетов. 
-		while(si().thread_work > 0) {
+		while(thread_work() > 0) {
 			std::unique_lock<std::mutex> lck(si().mtx_end);
 			si().cv_end.wait_for(lck, std::chrono::milliseconds(300));
 		}
