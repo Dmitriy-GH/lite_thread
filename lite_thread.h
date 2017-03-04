@@ -69,7 +69,6 @@
 #include <unordered_map>
 #include <assert.h>
 #include <time.h>
-#include <shared_mutex>
 
 #ifdef _DEBUG
 #ifndef DEBUG_LT
@@ -378,7 +377,7 @@ protected:
 		#ifdef STAT_LT
 		lite_thread_stat_t::si().stat_msg_run += cnt_msg_run;
 		lite_thread_stat_t::si().stat_cache_full += cnt_cache_full;
-		#endif	
+		#endif
 	}
 
 	// Проверка готовности к запуску
@@ -667,10 +666,10 @@ class alignas(64) lite_thread_t {
 	// Общие данные всех потоков
 	struct static_info_t {
 		std::vector<lite_thread_t*> worker_list;	// Массив описателей потоков
+		std::atomic<size_t> thread_count;			// Количество запущеных потоков
 		std::atomic<lite_thread_t*> worker_free = {0}; // Указатель на свободный поток
 		lite_mutex_t mtx;							// Блокировка доступа к массиву потоков
 		std::atomic<bool> stop = {0};				// Флаг остановки всех потоков
-		std::atomic<size_t> thread_count = { 0 };	// Количество потоков
 		std::atomic<size_t> thread_work = { 0 };	// Количество работающих потоков
 		std::mutex mtx_end;							// Для ожидания завершения потоков
 		std::condition_variable cv_end;				// Для ожидания завершения потоков
