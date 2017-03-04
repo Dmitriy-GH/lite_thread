@@ -22,7 +22,7 @@
 #endif
 //---------------------------------------------------------------------
 //#define DEBUG_LT
-//#define STAT_LT
+#define STAT_LT
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
