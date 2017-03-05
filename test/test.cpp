@@ -1,5 +1,5 @@
 ﻿// Простейшие примеры использования с выводом всего происходящего в потоках в консоль
-#define DEBUG_LT
+#define LT_DEBUG
 #include "../lite_thread.h"
 #include <stdio.h>
 #include <iostream>
@@ -118,7 +118,6 @@ public:
 int main()
 {
 	printf(" time: thread#N action\n");
-	// Для запуска одного теста закамментить ненужные
 	printf("%5lld: --- test 1 ---\n", lite_time_now());
 	test1();
 	std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста

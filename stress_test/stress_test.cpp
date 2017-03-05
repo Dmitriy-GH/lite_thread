@@ -23,8 +23,8 @@
 
 #define CPU_MAX 8 // Максимальное количество одновременно работающих потоков
 //---------------------------------------------------------------------
-//#define DEBUG_LT
-#define STAT_LT
+//#define LT_DEBUG
+#define LT_STAT
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -282,6 +282,7 @@ int main()
 	for (size_t i = 0; i < ACTOR_COUNT; i++) {
 		worker_list[i].handle()->resource_set(res);
 	}
+	lite_resource_t* res2 = lite_resource_create("CPU2", CPU_MAX);
 	lite_resource_set("CPU", start);
 	lite_resource_set("CPU", finish);
 
