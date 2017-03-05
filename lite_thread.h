@@ -148,7 +148,8 @@ class lite_mutex_t {
 	CRITICAL_SECTION cs;
 public:
 	lite_mutex_t() {
-		InitializeCriticalSection(&cs);
+		//InitializeCriticalSection(&cs);
+		InitializeCriticalSectionAndSpinCount(&cs, 1000);
 	}
 
 	~lite_mutex_t() {
@@ -343,7 +344,7 @@ public:
 		#endif
 	}
 	
-	~lite_resource_t() {
+	~lite_resource_t() noexcept {
 		assert(res_free == res_max);
 		#ifdef LT_STAT
 		lite_thread_stat_t::si().stat_res_lock += cnt_lock;
@@ -351,7 +352,7 @@ public:
 	}
 
 	// Захват ресурса, возвращает true при успехе
-	bool lock() {
+	bool lock() noexcept {
 		#ifdef LT_STAT
 		cnt_lock++;
 		#endif
@@ -364,12 +365,12 @@ public:
 	}
 
 	// Освобождение ресурса
-	void unlock() {
+	void unlock() noexcept {
 		res_free++;
 	}
 
 	// Количество свободных ресурсов
-	bool free() {
+	bool free() noexcept {
 		return res_free > 0;
 	}
 
@@ -403,7 +404,7 @@ public:
 	}
 
 	// Очистка памяти
-	static void clear() {
+	static void clear() noexcept {
 		lite_lock_t lck(si().mtx);
 		for (auto& it : si().lr_idx) {
 			delete it.second;

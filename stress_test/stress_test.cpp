@@ -12,13 +12,16 @@
 Сообщения гоняются по кругу TEST_TIME секунд
 */
 
+#ifndef _DEBUG
 #define ACTOR_COUNT 1000  // Количество обработчиков
 #define STEP_COUNT  100  // Количество шагов, которое должно пройти сообщение
 #define MSG_COUNT	100  // Количество одновременно идущих сообщений
-#ifdef _DEBUG
-#define TEST_TIME	3  // Время теста, сек.
-#else
 #define TEST_TIME	10  // Время теста, сек.
+#else
+#define ACTOR_COUNT 100
+#define STEP_COUNT  10
+#define MSG_COUNT	2
+#define TEST_TIME	3
 #endif
 
 #define CPU_MAX 8 // Максимальное количество одновременно работающих потоков
@@ -45,31 +48,18 @@ class worker_t;
 std::vector<worker_t> worker_list(ACTOR_COUNT); // Массив акторов обработчиков
 
 std::atomic<int> msg_count = { 0 }; // Счетчик сообщений дошедших до финиша
+std::atomic<int> msg_count_min = { 999999999 }; // Мин. количество кругов пройденных одним сообщением
+std::atomic<int> msg_count_max = { 0 }; // Макс. количество кругов пройденных одним сообщением
 std::atomic<int> msg_finished = { 0 }; // Счетчик сообщений пришедших после остановки теста
 std::atomic<int> time_alert = { 500 }; // Время следующего вывода состояния теста
 std::atomic<bool> stop_all = { 0 }; // Флаг завершения работы
-
-
-//---------------------------------------------------------------------
-// Многопоточный ГСЧ
-size_t lite_random() {
-	static std::atomic<size_t> n = {0};
-	thread_local size_t nt = {0};
-	if(nt == 0) {
-		size_t old = n;
-		while (!n.compare_exchange_weak(old, old * 1023 + 65537));
-		nt = old;
-		//printf("init rand\n");
-	} else {
-		nt = nt * 1023 + 65537;
-	}
-	return nt;
-}
 
 //---------------------------------------------------------------------
 // Содержимое сообщения
 struct data_t {
 	size_t worker_num;		// Номер обработчика сообщения
+	size_t rand;			// Для генерации следующего шага
+	size_t count_all;		// Количество пройденных циклов
 	size_t step_count;	// Количество пройденных шагов
 	lite_actor_t* map[ACTOR_COUNT]; // Список акторов
 	bool mark[ACTOR_COUNT]; // Отметка актора об обработке сообщения
@@ -136,7 +126,8 @@ class alignas(64) worker_t {
 
 			// Выбор следующего
 			for(size_t i = 0; i < 5; i++) {
-				d->worker_num = lite_random() % ACTOR_COUNT;
+				d->rand = d->rand * 1023 + 65537;
+				d->worker_num = d->rand % ACTOR_COUNT;
 				if (!d->mark[d->worker_num]) break; // актор d->worker_num не пройден
 			}
 			if(d->mark[d->worker_num]) { // актор d->worker_num пройден
@@ -219,7 +210,9 @@ void start_func(lite_msg_t* msg, void* env) {
 		return;
 	}
 	// Очистка отметок выполнения
-	d->worker_num = rand() % ACTOR_COUNT;
+	d->count_all++;
+	d->rand = d->rand * 1023 + 65537;
+	d->worker_num = d->rand % ACTOR_COUNT;
 	d->step_count = 0;
 	memset(d->mark, 0, sizeof(d->mark));
 	// Отправка дальше
@@ -257,6 +250,8 @@ void finish_func(lite_msg_t* msg, void* env) {
 	if(stop_all || time > TEST_TIME * 1000) {
 		// Время теста истекло
 		msg_finished++;
+		if (msg_count_max < d->count_all) msg_count_max = d->count_all;
+		if (msg_count_min > d->count_all) msg_count_min = d->count_all;
 		return;
 	} else if(time > time_alert) {
 		// Вывод текущего состояния раз 0.5 сек
@@ -282,7 +277,7 @@ int main()
 	for (size_t i = 0; i < ACTOR_COUNT; i++) {
 		worker_list[i].handle()->resource_set(res);
 	}
-	lite_resource_t* res2 = lite_resource_create("CPU2", CPU_MAX);
+	lite_resource_t* res2 = lite_resource_create("CPU2", 2);
 	lite_resource_set("CPU", start);
 	lite_resource_set("CPU", finish);
 
@@ -291,6 +286,8 @@ int main()
 		lite_msg_t* msg;
 		msg = lite_msg_create<data_t>(TYPE_DATA);
 		data_t* d = lite_msg_data<data_t>(msg);  // Указатель на содержимое сообщения
+		d->rand = i;
+		d->count_all = 0;
 		for(size_t j = 0; j < ACTOR_COUNT; j++) d->map[j] = worker_list[j].handle();
 		lite_thread_run(msg, start);
 	}
@@ -310,7 +307,7 @@ int main()
 	}else if (total != msg_count * STEP_COUNT) {
 			printf("ERROR: total %d need %d\n", total, msg_count * STEP_COUNT);
 	} else {
-		printf("%5lld: test OK worked: %d msg  transfer: %d msg  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, total, MSG_COUNT);
+		printf("%5lld: test OK worked: %d msg (min %d max %d) transfer: %d msg  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, (int)msg_count_min, (int)msg_count_max, total, MSG_COUNT);
 	}
 	printf("compile %s %s with %s\n", __DATE__, __TIME__, LOCK_TYPE_LT);
 #ifdef _DEBUG
