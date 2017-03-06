@@ -87,7 +87,7 @@
 
 #ifdef _DEBUG
 #ifndef LT_DEBUG
-#define LT_DEBUG
+//#define LT_DEBUG
 #endif
 #endif
 
@@ -124,8 +124,10 @@ struct lite_thread_stat_t {
 		printf("cache_full     %llu\n", (uint64_t)si().stat_cache_full);
 		printf("resource_lock  %llu\n", (uint64_t)si().stat_res_lock);
 		printf("msg_not_run    %llu\n", (uint64_t)si().stat_msg_not_run);
+		#ifdef LT_STAT_QUEUE
 		printf("queue_max      %llu\n", (uint64_t)si().stat_queue_max);
 		printf("queue_push     %llu\n", (uint64_t)si().stat_queue_push);
+		#endif
 		printf("msg_run        %llu\n", (uint64_t)si().stat_msg_run);
 		printf("\n");
 	}
@@ -195,10 +197,15 @@ static int64_t lite_time_now() {
 //----------------------------------------------------------------------------------
 class lite_actor_t;
 class lite_thread_t;
+class lite_msg_queue_t;
 #pragma warning( push )
 #pragma warning( disable : 4200 ) // MSVC не нравится data[]
 // Сообщение
 struct lite_msg_t {
+	friend lite_msg_queue_t;
+protected:
+	lite_msg_t* next;	// Указатель на следующее сообщение в очереди
+public:
 	int type;			// Тип сообщения
 	size_t size;		// Размер data, байт
 	char data[];		// Данные
@@ -220,6 +227,7 @@ struct lite_msg_t {
 		if (msg != NULL) {
 			msg->size = size;
 			msg->type = type;
+			msg->next = NULL;
 			if (size != 0) msg->data[0] = 0;
 		}
 		#ifdef LT_DEBUG
@@ -240,6 +248,7 @@ struct lite_msg_t {
 	static void erase(lite_msg_t* msg) noexcept {
 		if (msg != NULL) {
 			#ifdef LT_DEBUG
+			assert(msg->next == NULL);
 			assert(msg->type != 0xDDDDDDDD); // Повторное удаление, у MSVC2015 в дебаге free() все переписывает на 0xDD
 			msg->type = 0xDDDDDDDD;
 			used_msg(-1);
@@ -266,18 +275,26 @@ struct lite_msg_t {
 //----------------------------------------------------------------------------------
 
 class lite_msg_queue_t {
-	std::queue<lite_msg_t*> queue;	// Очередь сообщений
-	lite_msg_t* msg_one;			// Альтернатива очереди при msg_count == 1
+	lite_msg_t* msg_first;			// Указатель на первое в очереди
+	lite_msg_t* msg_last;			// Указатель на последнее в очереди
 	lite_mutex_t mtx;				// Синхронизация доступа
-	bool is_empty;					// Флаг что очередь не пуста
+	#ifdef LT_STAT_QUEUE
+	size_t size;					// Размер очереди
 	size_t push_cnt;				// Счетчик помещенных в очередь
 	size_t max_size;				// Максимальный размер очереди
+	#endif
 
 public:
-	lite_msg_queue_t() : msg_one(NULL), is_empty(true), push_cnt(0), max_size(0) {}
+	lite_msg_queue_t() : msg_first(NULL), msg_last(NULL) {
+		#ifdef LT_STAT_QUEUE
+		size = 0;
+		push_cnt = 0;
+		max_size = 0;
+		#endif
+	}
 
 	~lite_msg_queue_t() {
-		#ifdef LT_STAT
+		#ifdef LT_STAT_QUEUE
 		lite_thread_stat_t::si().stat_queue_push += push_cnt;
 		if (lite_thread_stat_t::si().stat_queue_max < max_size) lite_thread_stat_t::si().stat_queue_max = max_size;
 		#endif
@@ -285,43 +302,46 @@ public:
 
 	// Добавление сообщения в очередь, возврашает размер
 	void push(lite_msg_t* msg) noexcept {
+		msg->next = NULL;
 		lite_lock_t lck(mtx); // Блокировка
-		if (msg_one == NULL && queue.size() == 0) {
-			// 1-е сообщение. Запись в msg_one
-			msg_one = msg;
+		if(msg_last == NULL) {
+			msg_first = msg;
+			msg_last = msg;
 		} else {
-			// 2-е сообщение. Запись в очередь
-			queue.push(msg);
-			#ifdef LT_STAT
-			push_cnt++;
-			if (max_size < queue.size()) max_size = queue.size();
-			#endif
+			msg_last->next = msg;
+			msg_last = msg;
 		}
-		is_empty = false;
+		#ifdef LT_STAT_QUEUE
+		size++;
+		if (max_size < size) max_size = size;
+		#endif
 	}
 
 	// Чтение сообщения из очереди
 	lite_msg_t* pop() noexcept {
 		lite_lock_t lck(mtx); // Блокировка
-		// Чтение первого из msg_one
-		lite_msg_t* msg = msg_one;
-		if (msg != NULL) {
-			msg_one = NULL;
-			is_empty = (queue.size() == 0);
-			return msg;
+		if (msg_first == NULL) return NULL;
+		lite_msg_t* msg = msg_first;
+		msg_first = msg->next;
+		if (msg_first == NULL) {
+			msg_last = NULL;
 		}
-		// Чтение из очереди
-		msg = NULL;
-		if (queue.size() != 0) {
-			msg = queue.front();
-			queue.pop();
-		}
-		is_empty = (queue.size() == 0);
+		#ifdef LT_DEBUG
+		msg->next = NULL;
+		#endif
+		#ifdef LT_STAT_QUEUE
+		size--;
+		#endif
 		return msg;
 	}
 
+	// Установка блокировки
+	void lock() {
+
+	}
+
 	int empty() noexcept {
-		return is_empty;
+		return msg_last == NULL;
 	}
 };
 
