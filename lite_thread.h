@@ -276,6 +276,7 @@ public:
 
 class lite_msg_queue_t {
 	lite_msg_t* msg_first;			// Указатель на первое в очереди
+	lite_msg_t* msg_first2;			// Указатель на первое в очереди, меняется только под блокировкой
 	lite_msg_t* msg_last;			// Указатель на последнее в очереди
 	lite_mutex_t mtx;				// Синхронизация доступа
 	#ifdef LT_STAT_QUEUE
@@ -285,7 +286,7 @@ class lite_msg_queue_t {
 	#endif
 
 public:
-	lite_msg_queue_t() : msg_first(NULL), msg_last(NULL) {
+	lite_msg_queue_t() : msg_first(NULL), msg_first2(NULL), msg_last(NULL) {
 		#ifdef LT_STAT_QUEUE
 		size = 0;
 		push_cnt = 0;
@@ -300,15 +301,15 @@ public:
 		#endif
 	}
 
-	// Добавление сообщения в очередь, возврашает размер
+	// Добавление сообщения в очередь
 	void push(lite_msg_t* msg) noexcept {
 		msg->next = NULL;
 		lite_lock_t lck(mtx); // Блокировка
 		if(msg_last == NULL) {
-			msg_first = msg;
+			msg_first2 = msg;
 			msg_last = msg;
 		} else {
-			msg_last->next = msg;
+			msg_last->next = msg; // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 			msg_last = msg;
 		}
 		#ifdef LT_STAT_QUEUE
@@ -317,15 +318,35 @@ public:
 		#endif
 	}
 
-	// Чтение сообщения из очереди
-	lite_msg_t* pop() noexcept {
-		lite_lock_t lck(mtx); // Блокировка
-		if (msg_first == NULL) return NULL;
-		lite_msg_t* msg = msg_first;
-		msg_first = msg->next;
-		if (msg_first == NULL) {
-			msg_last = NULL;
+	// Чтение сообщения из очереди. lock = false без блокировки
+	lite_msg_t* pop(bool lock = true) noexcept {
+		lock = true;
+		if (lock) {
+			mtx.lock(); // Блокировка
 		}
+		if (msg_first == NULL) {
+			if (!lock) {
+				mtx.lock(); // Блокировка для доступа к msg_first2
+				lock = true;
+			}
+			msg_first = msg_first2;
+			msg_first2 = NULL;
+		}
+		lite_msg_t* msg = msg_first;
+
+		if(msg != NULL) {
+			msg_first = msg->next; // Чтение без блокировки
+			if (msg_first == NULL) {
+				if(!lock) {
+					mtx.lock(); // Блокировка для доступа к msg_last
+					lock = true;
+				}
+				msg_first = msg->next; // Повторное чтение под блокировкой на случай если был push
+				if(msg_first == NULL) msg_last = NULL;
+			}
+		}
+		if (lock) mtx.unlock(); // Снятие блокировки
+
 		#ifdef LT_DEBUG
 		msg->next = NULL;
 		#endif
@@ -333,11 +354,6 @@ public:
 		size--;
 		#endif
 		return msg;
-	}
-
-	// Установка блокировки
-	void lock() {
-
 	}
 
 	int empty() noexcept {
@@ -543,9 +559,10 @@ protected:
 		} else if (resource_lock(resource)) { // Занимаем ресурс
 			ti().la_next_run = NULL;
 			ti().la_now_run = this;
+			bool need_lock = (thread_max != 1); // Блокировка нужна только многопоточным акторам
 			while (true) {
 				// Извлечение сообщения из очереди
-				lite_msg_t* msg = msg_queue.pop();
+				lite_msg_t* msg = msg_queue.pop(need_lock);
 				if (msg == NULL) break;
 				// Запуск функции
 				ti().msg_del = msg; // Пометка на удаление
