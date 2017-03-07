@@ -58,11 +58,29 @@ void test2() { // Основной поток
 // Тест 3.
 // 1 запуск и 10 рекурсивных вызовов (в выводе recv 300+)
 #define TYPE_DATA 1
-#define TYPE_END  2
 
-class worker_t {
+class worker_t : public lite_worker_t {
 	int count; // Количество вызовов
 	lite_actor_t* i_am; // Актор указывающий на этот объект
+
+public:
+	// Конструктор
+	worker_t() {
+		count = 0;
+		i_am = handle(); // i_am актор из объекта класса worker_t
+	}
+
+	// Обработка сообщения
+	void recv(lite_msg_t* msg) override {
+		switch (msg->type) {
+		case TYPE_DATA:
+			work_data(msg);
+			return;
+
+		default:
+			printf("%5lld: thread#%d unknown type %d\n", lite_time_now(), (int)lite_thread_num(), msg->type);
+		}
+	}
 
 	// Обработка сообщения TYPE_DATA
 	void work_data(lite_msg_t* msg) {
@@ -76,44 +94,20 @@ class worker_t {
 		}
 	}
 
-	// Обработка сообщения TYPE_END (оповещение о завершении работы)
-	void end() {
-		printf("%5lld: thread#%d work end. count = %d\n", lite_time_now(), (int)lite_thread_num(), count);
-	}
-
-public:
-	// Конструктор
-	worker_t() {
-		count = 0;
-		i_am = lite_actor_get(worker_t::recv, this); // i_am актор из объекта класса worker_t
-		// Регистрация оповещения об остановке. Будет получено перед окончанием работы приложения.
-		lite_msg_t* msg_end = lite_msg_create(0, TYPE_END);// Создание сообщения об окончании работы
-		lite_msg_end(msg_end, i_am); // Регистрация сообщения об окончании работы
-		// Отправка сообщения себе 
-		lite_msg_t* msg = lite_msg_create<int>(TYPE_DATA);// Создание сообщения
-		int* x = lite_msg_data<int>(msg); // Указатель на содержимое сообщения
-		assert(x != NULL);
-		*x = 300; // Установка содержимого сообщения
-		lite_thread_run(msg, i_am); // Отправка сообщения 
-	}
-
-	// Прием входящего сообщения
-	static void recv(lite_msg_t* msg, void* env) {
-		worker_t* w = (worker_t*)env;
-		switch(msg->type) {
-		case TYPE_DATA:
-			w->work_data(msg);
-			return;
-
-		case TYPE_END:
-			w->end();
-			return;
-
-		default:
-			printf("%5lld: thread#%d unknown type %d\n", lite_time_now(), (int)lite_thread_num(), msg->type);
-		}
+	~worker_t() {
+		printf("%5lld: thread#%d worker end. count = %d\n", lite_time_now(), (int)lite_thread_num(), count);
 	}
 };
+
+void test3() { // Основной поток
+	lite_actor_t* la = lite_actor_create<worker_t>(); // Создание актора-объекта worker_t
+
+	lite_msg_t* msg = lite_msg_create<int>(TYPE_DATA);// Создание сообщения
+	int* x = lite_msg_data<int>(msg); // Указатель на содержимое сообщения
+	*x = 300; // Установка содержимого сообщения
+	lite_thread_run(msg, la); // Отправка сообщения на la
+}
+
 
 int main()
 {
@@ -125,9 +119,10 @@ int main()
 	test2();
 	std::this_thread::sleep_for(std::chrono::seconds(3)); // для завершения теста
 	printf("%5lld: --- test 3 ---\n", lite_time_now());
-	worker_t w;
+	test3();
 	std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста
 
+	// Ожидание завершения работы
 	lite_thread_end();
 #ifdef _DEBUG
 	printf("Press any key ...\n");
