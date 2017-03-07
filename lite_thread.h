@@ -48,6 +48,7 @@
    окончании удалить lite_msg_erase()
 
 
+
    Для ограничения количества одновременно запущенных акторов использующих общий ресурс (процессор, сеть, 
    БД и т.д.) есть ограничение ресурсов.
    Для создания ресурса:
@@ -487,6 +488,7 @@ class alignas(64) lite_actor_t {
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
 	bool in_cache;						// Помещен в кэш планирования запуска
+	std::string name;					// Наименование актора
 	#ifdef LT_STAT
 	size_t cnt_msg_run;					// Счетчик обработанных сообщений
 	size_t cnt_cache_full;				// Счетчик когда сообщение не влезло в кэш
@@ -565,6 +567,13 @@ protected:
 		return;
 	}
 
+public:
+	// Получение имени актора
+	const std::string& name_get() {
+		return name;
+	}
+
+private:
 	// static переменные уровня потока -------------------------------------------------
 	struct thread_info_t {
 		lite_msg_t* msg_del;		// Обрабатываемое сообщение, будет удалено после обработки
@@ -582,10 +591,12 @@ protected:
 
 	// static переменные глобальные ----------------------------------------------------
 	typedef std::unordered_map<lite_actor_func_t, lite_actor_t*> lite_actor_list_t;
+	typedef std::unordered_map<std::string, lite_actor_t*> lite_name_list_t;
 	typedef std::vector<lite_actor_t*> lite_actor_cache_t;
 
 	struct static_info_t {
-		lite_actor_list_t la_idx;	// Индекс для поиска lite_actor_t*
+		lite_actor_list_t la_idx;	// Индекс для поиска lite_actor_t* по (func, env)
+		lite_name_list_t la_name_idx;// Индекс для поиска lite_actor_t* по имени
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
 		lite_actor_cache_t la_list; // Кэш списка акторов
 		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
@@ -724,6 +735,7 @@ protected:
 			delete a;
 		}
 		si().la_idx.clear();
+		si().la_name_idx.clear();
 		si().la_list.clear();
 	}
 
@@ -746,6 +758,30 @@ public: //-------------------------------------------------------------
 			si().la_idx[a] = la;
 			lite_lock_t lck2(si().mtx_list); // Блокировка
 			si().la_list.push_back(la);
+		}
+		return la;
+	}
+
+	// Установка имени актора
+	static void name_set(lite_actor_t* la, const std::string& name) {
+		lite_lock_t lck(si().mtx_idx); // Блокировка
+		lite_name_list_t::iterator it = si().la_name_idx.find(name); // Поиск по индексу
+		if (it != si().la_name_idx.end()) {
+			assert(la == it->second); // Такое имя уже есть у другого актора
+		} else {
+			assert(la->name.empty()); // У актора уже есть имя
+			si().la_name_idx[name] = la;
+			la->name = name;
+		}
+	}
+
+	// Получание актора по имени
+	static lite_actor_t* name_find(const std::string& name) {
+		lite_lock_t lck(si().mtx_idx); // Блокировка
+		lite_name_list_t::iterator it = si().la_name_idx.find(name); // Поиск по индексу
+		lite_actor_t* la = NULL;
+		if (it != si().la_name_idx.end()) {
+			la = it->second;
 		}
 		return la;
 	}
@@ -825,6 +861,14 @@ public:
 		si().la_list.push_back(w);
 		return (lite_actor_t*)w->handle();
 	}
+
+	template <typename T>
+	static lite_actor_t* create(const std::string& name) {
+		lite_actor_t* la = create<T>();
+		lite_actor_t::name_set(la, name);
+		return la;
+	}
+	
 
 friend lite_thread_t;
 protected:
@@ -1132,15 +1176,25 @@ static lite_msg_t* lite_msg_copy(lite_msg_t* msg) noexcept {
 	return lite_actor_t::msg_copy(msg);
 }
 
-// Получения указателя на актор
+// Получения указателя на актор по функции
 static lite_actor_t* lite_actor_get(lite_func_t func, void* env = NULL) noexcept {
 	return lite_actor_t::get(func, env);
+}
+
+// Получения указателя на актор по имени
+static lite_actor_t* lite_actor_get(const std::string& name) noexcept {
+	return lite_actor_t::name_find(name);
 }
 
 // Создание актора из объекта унаследованного от lite_worker_t
 template <typename T>
 static lite_actor_t* lite_actor_create() {
 	return lite_worker_t::create<T>();
+}
+
+template <typename T>
+static lite_actor_t* lite_actor_create(const std::string& name) {
+	return lite_worker_t::create<T>(name);
 }
 
 // Установка глубины распараллеливания
