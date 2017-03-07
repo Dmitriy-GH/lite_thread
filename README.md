@@ -85,6 +85,8 @@ lite_thread_run(msg, actor1); //Отправка msg в actor1()
 
 далее работа с d->...
 
+###Отправка сообщения
+
 Отправка сообщения актору lite_actor_t* la
 
 **lite_thread_run(msg, la)**
