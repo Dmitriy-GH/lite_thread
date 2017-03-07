@@ -348,7 +348,7 @@ public:
 		if (lock) mtx.unlock(); // Снятие блокировки
 
 		#ifdef LT_DEBUG
-		msg->next = NULL;
+		if(msg != NULL) msg->next = NULL;
 		#endif
 		#ifdef LT_STAT_QUEUE
 		size--;
@@ -579,7 +579,7 @@ protected:
 		return;
 	}
 
-	// static методы уровня потока -------------------------------------------------
+	// static переменные уровня потока -------------------------------------------------
 	struct thread_info_t {
 		lite_msg_t* msg_del;		// Обрабатываемое сообщение, будет удалено после обработки
 		bool need_wake_up;			// Необходимо будить другой поток при отправке
@@ -588,14 +588,13 @@ protected:
 		lite_resource_t* lr_now_used;// Текущий захваченный ресурс
 	};
 
-	// Текущее сообщение в потоке
 	static thread_info_t& ti() noexcept {
 		thread_local thread_info_t ti = {0};
 		return ti;
 	}
 
 
-	// static методы глобальные ----------------------------------------------------
+	// static переменные глобальные ----------------------------------------------------
 	typedef std::unordered_map<lite_actor_func_t, lite_actor_t*> lite_actor_list_t;
 	typedef std::vector<lite_actor_t*> lite_actor_cache_t;
 
@@ -612,13 +611,14 @@ protected:
 		return x;
 	}
 
+	// static методы глобальные ----------------------------------------------------
 	// Сохранение в кэш указателя на актор ожидающий исполнения
 	void cache_push(lite_actor_t* la) noexcept {
 		assert(la != NULL);
 		if (!la->is_ready() || la->in_cache) return;
 
 		if (ti().la_now_run != NULL && ti().la_now_run->msg_queue.empty() && ti().la_next_run == NULL && (ti().lr_now_used == NULL || ti().lr_now_used == la->resource)) {
-			// Выпоняется последнее задание текущего актора, запоминаем в локальный кэш для обработки его следующим
+			// Выпоняется последнее задание текущего актора, запоминаем в локальный кэш потока для обработки его следующим
 			ti().la_next_run = la;
 			return;
 		}
@@ -774,8 +774,14 @@ public: //-------------------------------------------------------------
 
 	// Копирование сообщения
 	static lite_msg_t* msg_copy(lite_msg_t* msg) noexcept {
-		if (ti().msg_del == msg) ti().msg_del = NULL; // Снятие пометки на удаление
-		return msg;
+		if (ti().msg_del == msg) {
+			ti().msg_del = NULL; // Снятие пометки на удаление
+			return msg;
+		} else {
+			lite_msg_t* msg2 = lite_msg_t::create(msg->size, msg->type);
+			memcpy(msg2, msg, msg->size);
+			return msg2;
+		}
 	}
 
 	// Установка сообщения об окончании работы
@@ -790,6 +796,62 @@ public: //-------------------------------------------------------------
 	}
 
 
+};
+
+//----------------------------------------------------------------------------------
+//----- КЛАСС-ОБЕРТКА ДЛЯ АКТОРОВ --------------------------------------------------
+//----------------------------------------------------------------------------------
+class lite_worker_t {
+	// Прием входящего сообщения
+	static void recv(lite_msg_t* msg, void* env) {
+		lite_worker_t* w = (lite_worker_t*)env;
+		w->recv(msg);
+	}
+
+public:
+	lite_actor_t* handle() {
+		return lite_actor_t::get(recv, this);
+	}
+
+	// Обработчик сообщения, прописывать в дочернем классе
+	virtual void recv(lite_msg_t* msg) {
+		printf("method work() is not implemented\n");
+	}
+
+	virtual ~lite_worker_t() {}
+
+private:
+	// static переменные глобальные ----------------------------------------------------
+	typedef std::vector<lite_worker_t*> lite_worker_list_t;
+
+	struct static_info_t {
+		lite_worker_list_t la_list; // Список оберток
+		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
+	};
+
+	static static_info_t& si() noexcept {
+		static static_info_t x;
+		return x;
+	}
+
+public: 
+	// static методы -------------------------------------------------------------
+	// Создание объекта
+	template <typename T>
+	static lite_actor_t* create() {
+		T* w = new T;
+		lite_lock_t lck(si().mtx_list); // Блокировка
+		si().la_list.push_back(w);
+		return w->handle();
+	}
+
+friend lite_thread_t;
+protected:
+	// Удаление всех объектов
+	static void clear() {
+		lite_lock_t lck(si().mtx_list); // Блокировка
+		for (auto& w : si().la_list) delete w;
+	}
 };
 
 //----------------------------------------------------------------------------------
@@ -1035,6 +1097,7 @@ public: //-------------------------------------
 		// Дообработка необработанных сообщений. В т.ч. о завершении работы
 		work_msg();
 		// Очистка памяти под акторы
+		lite_worker_t::clear();
 		lite_actor_t::clear();
 		// Очистка памяти под ресурсы
 		lite_resource_t::clear();
@@ -1091,6 +1154,12 @@ static lite_msg_t* lite_msg_copy(lite_msg_t* msg) noexcept {
 // Получения указателя на актор
 static lite_actor_t* lite_actor_get(lite_func_t func, void* env = NULL) noexcept {
 	return lite_actor_t::get(func, env);
+}
+
+// Создание актора из объекта унаследованного от lite_worker_t
+template <typename T>
+static lite_actor_t* lite_actor_create() {
+	return lite_worker_t::create<T>();
 }
 
 // Установка глубины распараллеливания
