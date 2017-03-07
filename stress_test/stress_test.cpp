@@ -286,9 +286,9 @@ int main()
 	} else if (worker_t::count_end() != ACTOR_COUNT) {
 		printf("ERROR: lost %d worker finish\n", ACTOR_COUNT - worker_t::count_end());
 	}else if (msg_total != msg_count * STEP_COUNT) {
-			printf("ERROR: total %d need %d\n", msg_total, msg_count * STEP_COUNT);
+			printf("ERROR: total %d need %d\n", (int)msg_total, msg_count * STEP_COUNT);
 	} else {
-		printf("%5lld: test OK worked: %d msg (min %d max %d) transfer: %d msg  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, (int)msg_count_min, (int)msg_count_max, msg_total, MSG_COUNT);
+		printf("%5lld: test OK worked: %d msg (min %d max %d) transfer: %d msg  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, (int)msg_count_min, (int)msg_count_max, (int)msg_total, MSG_COUNT);
 	}
 	printf("compile %s %s with %s\n", __DATE__, __TIME__, LOCK_TYPE_LT);
 #ifdef _DEBUG
