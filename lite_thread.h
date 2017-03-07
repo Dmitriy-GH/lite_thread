@@ -61,15 +61,6 @@
    void lite_resource_set(const std::string& name, lite_func_t func, void* env = NULL)
 
 
-   Для оповещения о прекращении работы можно зарегистрировать соответствующее сообщение. По окончанию 
-   оно будет отправлено. При обработке этого сообщения запрещено отправлять исходящие сообщения другим.
-   Для регистрации сообщения о прекращении работы вызвать:
-   lite_msg_end(lite_msg_t* msg, lite_actor_t* la)
-   lite_msg_end(lite_msg_t* msg, lite_func_t func, void* env = NULL)
-
-   Для ожидания завершения все расчетов вызвать:
-   lite_thread_end()
-
    PS Функции с идентичным кодом оптимизатор компилятора может преврашать в одну, как следствие вызов 
    обеих пойдет в одной очереди.
 */
@@ -494,7 +485,6 @@ class alignas(64) lite_actor_t {
 	lite_actor_func_t la_func;			// Функция с окружением
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
-	std::atomic<lite_msg_t*> msg_end;	// Сообщение об окончании работы
 	bool in_cache;						// Помещен в кэш планирования запуска
 	#ifdef LT_STAT
 	size_t cnt_msg_run;					// Счетчик обработанных сообщений
@@ -507,7 +497,7 @@ protected:
 
 	//---------------------------------
 	// Конструктор
-	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), msg_end(NULL), in_cache(false), resource(NULL) {
+	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), in_cache(false), resource(NULL) {
 		#ifdef LT_STAT
 		cnt_msg_run = 0;
 		cnt_cache_full = 0;
@@ -517,11 +507,6 @@ protected:
 
 	// Деструктор
 	~lite_actor_t() {
-		if (msg_end != (lite_msg_t*)NULL) {
-			// Отправка сообщения об окончании работы
-			la_func.func(msg_end, la_func.env);
-			lite_msg_t::erase(msg_end);
-		}
 		#ifdef LT_STAT
 		lite_thread_stat_t::si().stat_msg_run += cnt_msg_run;
 		lite_thread_stat_t::si().stat_cache_full += cnt_cache_full;
@@ -785,11 +770,6 @@ public: //-------------------------------------------------------------
 	}
 
 	// Установка сообщения об окончании работы
-	static void actor_end(lite_msg_t* msg, lite_actor_t* la) noexcept {
-		la->msg_end = msg;
-	}
-
-	// Установка сообщения об окончании работы
 	void resource_set(lite_resource_t* res) noexcept {
 		assert(resource == NULL); // Контроль повторной установки ресурса
 		resource = res;
@@ -839,10 +819,10 @@ public:
 	// Создание объекта
 	template <typename T>
 	static lite_actor_t* create() {
-		T* w = new T;
+		lite_worker_t* w = (lite_worker_t*)new T;
 		lite_lock_t lck(si().mtx_list); // Блокировка
 		si().la_list.push_back(w);
-		return w->handle();
+		return (lite_actor_t*)w->handle();
 	}
 
 friend lite_thread_t;
@@ -1180,13 +1160,6 @@ static void lite_thread_run(lite_msg_t* msg, lite_func_t func, void* env = NULL)
 	lite_thread_t::run(msg, lite_actor_t::get(func, env));
 }
 
-// Регистрация сообщения об окончании работы
-static void lite_msg_end(lite_msg_t* msg, lite_actor_t* la) noexcept {
-	lite_actor_t::actor_end(msg, la);
-}
-static void lite_msg_end(lite_msg_t* msg, lite_func_t func, void* env = NULL) noexcept {
-	lite_actor_t::actor_end(msg, lite_actor_t::get(func, env));
-}
 // Завершение с ожиданием всех
 static void lite_thread_end() noexcept {
 	lite_thread_t::end();

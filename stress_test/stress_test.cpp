@@ -40,14 +40,10 @@
 //---------------------------------------------------------------------
 // Типы сообщений
 #define TYPE_DATA  1
-#define TYPE_END   2
 
 //---------------------------------------------------------------------
-class worker_t;
-
-std::vector<worker_t> worker_list(ACTOR_COUNT); // Массив акторов обработчиков
-
 std::atomic<int> msg_count = { 0 }; // Счетчик сообщений дошедших до финиша
+std::atomic<int> msg_total = { 0 }; // Счетчик сообщений прошедших через обработчика
 std::atomic<int> msg_count_min = { 999999999 }; // Мин. количество кругов пройденных одним сообщением
 std::atomic<int> msg_count_max = { 0 }; // Макс. количество кругов пройденных одним сообщением
 std::atomic<int> msg_finished = { 0 }; // Счетчик сообщений пришедших после остановки теста
@@ -57,9 +53,10 @@ std::atomic<bool> stop_all = { 0 }; // Флаг завершения работ�
 //---------------------------------------------------------------------
 // Содержимое сообщения
 struct data_t {
+	lite_actor_t* i_am;
 	size_t worker_num;		// Номер обработчика сообщения
 	size_t rand;			// Для генерации следующего шага
-	size_t count_all;		// Количество пройденных циклов
+	int count_all;		// Количество пройденных циклов
 	size_t step_count;	// Количество пройденных шагов
 	lite_actor_t* map[ACTOR_COUNT]; // Список акторов
 	bool mark[ACTOR_COUNT]; // Отметка актора об обработке сообщения
@@ -70,22 +67,12 @@ struct data_t {
 lite_actor_t* finish;
 lite_actor_t* start;
 
-class alignas(64) worker_t {
+class alignas(64) worker_t : public lite_worker_t {
 	static std::atomic<int> worker_end; // Счетчик завершивших работу
 
 	int count = 0; // Количество вызовов
 	lite_actor_t* i_am; // Актор указывающий на этот объект
 	std::atomic<int> parallel = {0}; // Количество парралельных запусков
-
-	// Завершение работы актора
-	void end() {
-		worker_end++;
-		#ifdef _DEBUG
-		//printf("%d,", count);
-		#endif
-		if(count == 0) printf("WARNING: worker count = 0\n");
-		return;
-	}
 
 	// Обработка сообщения
 	void work(lite_msg_t* msg) {
@@ -156,16 +143,11 @@ class alignas(64) worker_t {
 		parallel--;
 	}
 
-	static void recv(lite_msg_t* msg, void* env) {
-		worker_t* w = (worker_t*)env;
+	void recv(lite_msg_t* msg) override {
 		switch (msg->type) {
 		case TYPE_DATA:
-			w->work(msg);
+			work(msg);
 			break;
-
-		case TYPE_END:
-			w->end();
-			return;
 
 		default:
 			printf("ERROR: thread#%d unknown msg type %d\n", (int)lite_thread_num(), msg->type);
@@ -176,17 +158,16 @@ class alignas(64) worker_t {
 public:
 	// Конструктор
 	worker_t() {
+		i_am = handle();
 		count = 0;
-		i_am = lite_actor_get(worker_t::recv, this); // i_am актор из объекта класса worker_t
-		// Регистрация оповещения об остановке. Будет получено перед окончанием работы приложения.
-		lite_msg_t* msg_end = lite_msg_create(0, TYPE_END); // Создание сообщения об окончании работы
-		lite_msg_end(msg_end, i_am); // Регистрация сообщения об окончании работы
-		// Ограничение на количество ядер
 	}
 
-	// Указатель на обработчик
-	lite_actor_t* handle() {
-		return i_am;
+	// Завершение работы актора
+	~worker_t() {
+		msg_total += count;
+		worker_end++;
+		if (count == 0) printf("WARNING: worker count = 0\n");
+		return;
 	}
 
 	// Количество обработанных сообщений
@@ -272,10 +253,15 @@ int main()
 	finish = lite_actor_get(finish_func);
 	lite_actor_parallel(5, finish);
 
+	lite_actor_t* worker_list[ACTOR_COUNT];
+	for(size_t i = 0; i < ACTOR_COUNT; i++) {
+		worker_list[i] = lite_actor_create<worker_t>();
+	}
+
 	// Установка ресурса "CPU"
 	lite_resource_t* res = lite_resource_create("CPU", CPU_MAX);
 	for (size_t i = 0; i < ACTOR_COUNT; i++) {
-		worker_list[i].handle()->resource_set(res);
+		worker_list[i]->resource_set(res);
 	}
 	lite_resource_t* res2 = lite_resource_create("CPU2", 2);
 	lite_resource_set("CPU", start);
@@ -288,26 +274,21 @@ int main()
 		data_t* d = lite_msg_data<data_t>(msg);  // Указатель на содержимое сообщения
 		d->rand = i;
 		d->count_all = 0;
-		for(size_t j = 0; j < ACTOR_COUNT; j++) d->map[j] = worker_list[j].handle();
+		for(size_t j = 0; j < ACTOR_COUNT; j++) d->map[j] = worker_list[j];
 		lite_thread_run(msg, start);
 	}
 
 	std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // для запуска потоков
 	lite_thread_end(); // Ожидание окончания
 
-	int total = 0;
-	for(size_t i = 0; i < ACTOR_COUNT; i++) {
-		total += worker_list[i].count_msg();
-	}
-
 	if(msg_finished != MSG_COUNT) {
 		printf("ERROR: lost %d messages\n", MSG_COUNT - msg_finished);
 	} else if (worker_t::count_end() != ACTOR_COUNT) {
 		printf("ERROR: lost %d worker finish\n", ACTOR_COUNT - worker_t::count_end());
-	}else if (total != msg_count * STEP_COUNT) {
-			printf("ERROR: total %d need %d\n", total, msg_count * STEP_COUNT);
+	}else if (msg_total != msg_count * STEP_COUNT) {
+			printf("ERROR: total %d need %d\n", msg_total, msg_count * STEP_COUNT);
 	} else {
-		printf("%5lld: test OK worked: %d msg (min %d max %d) transfer: %d msg  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, (int)msg_count_min, (int)msg_count_max, total, MSG_COUNT);
+		printf("%5lld: test OK worked: %d msg (min %d max %d) transfer: %d msg  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, (int)msg_count_min, (int)msg_count_max, msg_total, MSG_COUNT);
 	}
 	printf("compile %s %s with %s\n", __DATE__, __TIME__, LOCK_TYPE_LT);
 #ifdef _DEBUG
