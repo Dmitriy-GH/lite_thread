@@ -18,9 +18,7 @@
 
 **void actor1(lite_msg_t* msg, void* env) {// Обработчик сообщения }**
 
-** main( ) ** 
-
-{
+void main() {
 
 lite_msg_t* msg = lite_msg_create< int >(); // Создание сообщения 
 
