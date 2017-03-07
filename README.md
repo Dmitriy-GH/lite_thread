@@ -14,38 +14,39 @@
 количество одновременно работающих копий данного актора (см. lite_actor_parallel()). 
 Также есть ограничение доступа группы акторов к конкретному ресурсу (процессор, память, сеть, БД и т.д.)
 
-**Актор** это или функция
+### Акторы
+это или функция
 
-void recv(lite_msg_t* msg, void* env) {
+**void recv(lite_msg_t* msg, void* env) {
  ... Обработка сообщения
-}
+}**
 
 или класс, унаследованный от базового класса lite_worker_t 
 
-class worker_t : public lite_worker_t {
+**class worker_t : public lite_worker_t {
    void recv(lite_msg_t* msg) override {
        ... Обработка сообщения
    }
-}
+}**
 
 И то и другое приводится к указателю на объект актора lite_actor_t*.
 
 Для функций
 
-lite_actor_t* la = lite_actor_get(recv)
+**lite_actor_t* la = lite_actor_get(recv)**
 
 Для классов, с созданием объекта
 
-lite_actor_t* la = lite_actor_create{worker_t}() // github не показывает что внутри <>, научусть ставить заменю фигурные скобки на нормальный синтаксис, пока читайте {} как <>
+**lite_actor_t* la = lite_actor_create< worker_t >()** 
 
 С созданием именованного объекта
 
-lite_actor_t* la = lite_actor_create{worker_t}("actor_name")
+**lite_actor_t* la = lite_actor_create< worker_t >("actor_name")**
 
 Для именованных объектов всегда можно восстановить указатель:
-
+**
 lite_actor_t* la = lite_actor_get("actor_name")
-
+**
 Все объекты кэшируются библиотекой и удаляются при завершении ее работы, т.е. явного удаления не требуется.
 
 
