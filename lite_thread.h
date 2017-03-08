@@ -390,6 +390,37 @@ public:
 };
 
 //----------------------------------------------------------------------------------
+//------ КЭШ АКТОРОВ ГОТОВЫХ К ВЫПОЛНЕНИЮ ------------------------------------------
+//----------------------------------------------------------------------------------
+class lite_actor_cache_t {
+	std::atomic<lite_actor_t*> next = {0};
+
+public:
+	// Запись в кэш
+	void push(lite_actor_t* la) noexcept {
+		if(next == (lite_actor_t*)NULL) {
+			lite_actor_t* nul = NULL;
+			if(next.compare_exchange_weak(nul, la)) {
+			#ifdef LT_STAT
+			} else {
+			lite_thread_stat_t::ti().stat_cache_full++;
+			#endif	
+			}
+		#ifdef LT_STAT
+		} else {
+			lite_thread_stat_t::ti().stat_cache_full++;
+		#endif	
+		}
+	}
+
+	// Извлечение из кэша
+	lite_actor_t* pop() noexcept {
+		if(next == (lite_actor_t*)NULL) return NULL;
+		return next.exchange(NULL);
+	}
+};
+
+//----------------------------------------------------------------------------------
 //------ РЕСУРС --------------------------------------------------------------------
 //----------------------------------------------------------------------------------
 
@@ -400,9 +431,10 @@ class alignas(64) lite_resource_t {
 	size_t cnt_lock;
 	#endif
 public:
-	std::atomic<lite_actor_t*> la_next_run;	// Следующий на выполнение актор
+	//std::atomic<lite_actor_t*> la_next_run;	// Следующий на выполнение актор
+	lite_actor_cache_t la_cache;
 
-	lite_resource_t(int max) : res_free(max), res_max(max), la_next_run(NULL) {
+	lite_resource_t(int max) : res_free(max), res_max(max) {
 		#ifdef LT_STAT
 		cnt_lock = 0;
 		#endif
@@ -605,17 +637,18 @@ private:
 
 
 	// static переменные глобальные ----------------------------------------------------
-	typedef std::unordered_map<lite_actor_func_t, lite_actor_t*> lite_actor_list_t;
-	typedef std::unordered_map<std::string, lite_actor_t*> lite_name_list_t;
-	typedef std::vector<lite_actor_t*> lite_actor_cache_t;
+	typedef std::unordered_map<lite_actor_func_t, lite_actor_t*> lite_actor_idx_t;
+	typedef std::unordered_map<std::string, lite_actor_t*> lite_name_idx_t;
+	typedef std::vector<lite_actor_t*> lite_actor_list_t;
 
 	struct static_info_t {
-		lite_actor_list_t la_idx;	// Индекс для поиска lite_actor_t* по (func, env)
-		lite_name_list_t la_name_idx;// Индекс для поиска lite_actor_t* по имени
+		lite_actor_idx_t la_idx;	// Индекс для поиска lite_actor_t* по (func, env)
+		lite_name_idx_t la_name_idx;// Индекс для поиска lite_actor_t* по имени
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
-		lite_actor_cache_t la_list; // Кэш списка акторов
+		lite_actor_list_t la_list; // Список акторов
 		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
-		alignas(64) std::atomic<lite_actor_t*> la_next_run;	// Следующий на выполнение актор
+		//alignas(64) std::atomic<lite_actor_t*> la_next_run;	// Следующий на выполнение актор
+		lite_actor_cache_t la_cache;		// Кэш акторов готовых к запуску
 	};
 
 	static static_info_t& si() noexcept {
@@ -638,26 +671,29 @@ private:
 		// Проверка есть ли ресурс
 		if (la->resource != NULL && !la->resource->free()) {
 			// Запись в кэш ресурса
-			lite_actor_t* nul = NULL;
-			if (la->resource->la_next_run == (lite_actor_t*)NULL && la->resource->la_next_run.compare_exchange_weak(nul, la)) {
-				la->in_cache = true;
-			#ifdef LT_STAT
-			} else {
-				lite_thread_stat_t::ti().stat_cache_full++;
-			#endif			
-			}
+			//lite_actor_t* nul = NULL;
+			//if (la->resource->la_next_run == (lite_actor_t*)NULL && la->resource->la_next_run.compare_exchange_weak(nul, la)) {
+			//	la->in_cache = true;
+			//#ifdef LT_STAT
+			//} else {
+			//	lite_thread_stat_t::ti().stat_cache_full++;
+			//#endif			
+			//}
+
+			la->resource->la_cache.push(la);
 			return;
 		}
 
 		// Помещение в глобальный кэш
-		lite_actor_t* nul = NULL;
-		if (si().la_next_run == (lite_actor_t*)NULL && si().la_next_run.compare_exchange_weak(nul, la)) {
-			la->in_cache = true;
-			#ifdef LT_STAT
-		} else {
-			lite_thread_stat_t::ti().stat_cache_full++;
-			#endif			
-		}
+		si().la_cache.push(la);
+		//lite_actor_t* nul = NULL;
+		//if (si().la_next_run == (lite_actor_t*)NULL && si().la_next_run.compare_exchange_weak(nul, la)) {
+		//	la->in_cache = true;
+		//	#ifdef LT_STAT
+		//} else {
+		//	lite_thread_stat_t::ti().stat_cache_full++;
+		//	#endif			
+		//}
 		if (!ti().need_wake_up) ti().need_wake_up = (la->resource == NULL || la->resource->free());
 	}
 
@@ -682,19 +718,32 @@ private:
 		#endif
 
 		// Проверка кэша используемого ресурса
-		if(ti().lr_now_used != NULL && ti().lr_now_used->la_next_run != (lite_actor_t*)NULL) {
-			la = ti().lr_now_used->la_next_run.exchange(NULL);
-			if (la != NULL && la->is_ready()) {
-				return la;
+		//if(ti().lr_now_used != NULL && ti().lr_now_used->la_next_run != (lite_actor_t*)NULL) {
+		//	la = ti().lr_now_used->la_next_run.exchange(NULL);
+		//	if (la != NULL && la->is_ready()) {
+		//		return la;
+		//	}
+		//}
+		if (ti().lr_now_used != NULL) {
+			while(la = ti().lr_now_used->la_cache.pop()) {
+				if (la->is_ready()) {
+					return la;
+				}
 			}
 		}
+
 		// Проверка глобального кэша
-		if(si().la_next_run != (lite_actor_t*)NULL) {
-			la = si().la_next_run.exchange(NULL);
-			if (la != NULL && la->is_ready()) {
+		while (la = si().la_cache.pop()) {
+			if (la->is_ready()) {
 				return la;
 			}
 		}
+		//if(si().la_next_run != (lite_actor_t*)NULL) {
+		//	la = si().la_next_run.exchange(NULL);
+		//	if (la != NULL && la->is_ready()) {
+		//		return la;
+		//	}
+		//}
 
 		#ifdef LT_STAT
 		lite_thread_stat_t::ti().stat_cache_found--;
@@ -714,13 +763,13 @@ private:
 		#endif
 
 		lite_lock_t lck(si().mtx_list); // Блокировка
-		for (lite_actor_cache_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
+		for (lite_actor_list_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
 			if ((*it)->is_ready()) {
 				ret = (*it);
 				ret->in_cache = true;
 				if(it != si().la_list.begin()) {
 					// Сдвиг активных ближе к началу
-					lite_actor_cache_t::iterator it2 = it;
+					lite_actor_list_t::iterator it2 = it;
 					it2--;
 					(*it) = (*it2);
 					(*it2) = ret;
@@ -735,7 +784,7 @@ private:
 	static size_t count_ready() noexcept {
 		lite_lock_t lck(si().mtx_list); // Блокировка
 		size_t cnt = 0;
-		for (lite_actor_cache_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
+		for (lite_actor_list_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
 			if ((*it)->is_ready()) {
 				cnt += (*it)->actor_free;
 			}
@@ -785,7 +834,7 @@ public: //-------------------------------------------------------------
 		lite_actor_func_t a(func, env);
 
 		lite_lock_t lck(si().mtx_idx); // Блокировка
-		lite_actor_list_t::iterator it = si().la_idx.find(a); // Поиск по индексу
+		lite_actor_idx_t::iterator it = si().la_idx.find(a); // Поиск по индексу
 		lite_actor_t* la;
 		if (it != si().la_idx.end()) {
 			la = it->second;
@@ -802,7 +851,7 @@ public: //-------------------------------------------------------------
 	// Установка имени актора
 	static void name_set(lite_actor_t* la, const std::string& name) {
 		lite_lock_t lck(si().mtx_idx); // Блокировка
-		lite_name_list_t::iterator it = si().la_name_idx.find(name); // Поиск по индексу
+		lite_name_idx_t::iterator it = si().la_name_idx.find(name); // Поиск по индексу
 		if (it != si().la_name_idx.end()) {
 			assert(la == it->second); // Такое имя уже есть у другого актора
 		} else {
@@ -815,7 +864,7 @@ public: //-------------------------------------------------------------
 	// Получание актора по имени
 	static lite_actor_t* name_find(const std::string& name) {
 		lite_lock_t lck(si().mtx_idx); // Блокировка
-		lite_name_list_t::iterator it = si().la_name_idx.find(name); // Поиск по индексу
+		lite_name_idx_t::iterator it = si().la_name_idx.find(name); // Поиск по индексу
 		lite_actor_t* la = NULL;
 		if (it != si().la_name_idx.end()) {
 			la = it->second;
