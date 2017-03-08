@@ -272,6 +272,7 @@ void actor_start(int threads) {
 		}
 	}
 
+	lite_thread_end(); // Ожидание окончания
 }
 
 int main(int argc, char **argv) {
@@ -290,8 +291,6 @@ int main(int argc, char **argv) {
 	} else { // запуск кода на lite_thread
 		printf("lite_thread %d threads ...\n", threads);
 		actor_start(threads);
-		std::this_thread::sleep_for(std::chrono::milliseconds(100)); // для запуска потоков
-		lite_thread_end(); // Ожидание окончания
 	}
 	printf("Time: %lld msec\n", lite_time_now());
 	return 0;

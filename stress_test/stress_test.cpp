@@ -28,6 +28,7 @@
 //---------------------------------------------------------------------
 //#define LT_DEBUG
 #define LT_STAT
+//#define LT_STAT_QUEUE
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -263,7 +264,7 @@ int main()
 	for (size_t i = 0; i < ACTOR_COUNT; i++) {
 		worker_list[i]->resource_set(res);
 	}
-	lite_resource_t* res2 = lite_resource_create("CPU2", 2);
+	//lite_resource_t* res2 = lite_resource_create("CPU2", 2);
 	lite_resource_set("CPU", start);
 	lite_resource_set("CPU", finish);
 
@@ -278,7 +279,6 @@ int main()
 		lite_thread_run(msg, start);
 	}
 
-	std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // для запуска потоков
 	lite_thread_end(); // Ожидание окончания
 
 	if(msg_finished != MSG_COUNT) {

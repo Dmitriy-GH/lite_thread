@@ -24,6 +24,7 @@ void actor1(lite_msg_t* msg, void* env) {// Обработчик сообщен�
 }
 
 void test1() { // Основной поток
+	printf("%5lld: --- test 1 ---\n", lite_time_now());
 	// Отправка 10 сообщений
 	for (int i = 100; i < 110; i++) {
 		lite_msg_t* msg = lite_msg_create<int>(); // Создание сообщения
@@ -44,6 +45,7 @@ void actor2(lite_msg_t* msg, void* env) {// Обработчик сообщен�
 }
 
 void test2() { // Основной поток
+	printf("%5lld: --- test 2 ---\n", lite_time_now());
 	lite_actor_parallel(3, actor2); // Глубина распараллеливания 3 потока
 	for (int i = 200; i < 220; i++) {
 		lite_msg_t* msg = lite_msg_create<int>(); // Создание сообщения
@@ -100,6 +102,7 @@ public:
 };
 
 void test3() { // Основной поток
+	printf("%5lld: --- test 3 ---\n", lite_time_now());
 	lite_actor_t* la = lite_actor_create<worker_t>(); // Создание актора-объекта worker_t
 
 	lite_msg_t* msg = lite_msg_create<int>(TYPE_DATA);// Создание сообщения
@@ -112,13 +115,13 @@ void test3() { // Основной поток
 int main()
 {
 	printf(" time: thread#N action\n");
-	printf("%5lld: --- test 1 ---\n", lite_time_now());
+
 	test1();
 	std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста
-	printf("%5lld: --- test 2 ---\n", lite_time_now());
+
 	test2();
 	std::this_thread::sleep_for(std::chrono::seconds(3)); // для завершения теста
-	printf("%5lld: --- test 3 ---\n", lite_time_now());
+
 	test3();
 	std::this_thread::sleep_for(std::chrono::seconds(2)); // для завершения теста
 
