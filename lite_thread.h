@@ -231,12 +231,13 @@ static int64_t lite_time_now() {
 	return (int64_t)(time_span.count() * 1000);
 }
 
-//----------------------------------------------------------------------------------
-//-------- СООБЩЕНИE ---------------------------------------------------------------
-//----------------------------------------------------------------------------------
 class lite_actor_t;
 class lite_thread_t;
 class lite_msg_queue_t;
+
+//----------------------------------------------------------------------------------
+//-------- СООБЩЕНИE ---------------------------------------------------------------
+//----------------------------------------------------------------------------------
 #pragma warning( push )
 #pragma warning( disable : 4200 ) // MSVC не нравится data[]
 // Сообщение
@@ -392,25 +393,118 @@ public:
 //----------------------------------------------------------------------------------
 //------ КЭШ АКТОРОВ ГОТОВЫХ К ВЫПОЛНЕНИЮ ------------------------------------------
 //----------------------------------------------------------------------------------
-class lite_actor_cache_t {
-	std::atomic<lite_actor_t*> next = {0};
 
-public:
-	// Запись в кэш
-	void push(lite_actor_t* la) noexcept {
-		if(next == (lite_actor_t*)NULL) {
-			lite_actor_t* nul = NULL;
-			if (next.compare_exchange_weak(nul, la)) return;
+#define LT_CACHE_SIZE 16 // Размер кэша акторов (четное число)
+
+class lite_actor_cache_t {
+	// Ячейка кэша
+	class alignas(64) cell_t {
+		std::atomic<lite_actor_t*> next = {0};
+
+	public:
+		// Запись la в кэш (ptr ячейка кэша куда записан)
+		bool push(lite_actor_t* la, std::atomic<lite_actor_t*>*& ptr) noexcept {
+			if(next == (lite_actor_t*)NULL) {
+				lite_actor_t* nul = NULL;
+				if(next.compare_exchange_weak(nul, la)) {
+					ptr = &next;
+					return true;
+				}
+			}
+			return false;
 		}
-		#ifdef LT_STAT
-		lite_thread_stat_t::ti().stat_cache_full++;
-		#endif	
+
+		// Извлечение из кэша
+		lite_actor_t* pop() noexcept {
+			if(next == (lite_actor_t*)NULL) return NULL;
+			return next.exchange(NULL);
+		}
+	};
+
+	cell_t cache[LT_CACHE_SIZE];
+
+	// Данные потока ---------------------------------
+	struct thread_info_t {
+		size_t cur = 0;		// Номер используемой ячейки cache в текушкм потоке
+	};
+
+	static thread_info_t& ti() noexcept {
+		thread_local thread_info_t x;
+		return x;
+	}
+public: //----------------------
+		// Запись la в кэш (ptr ячейка кэша куда записан)
+	void push(lite_actor_t* la, std::atomic<lite_actor_t*>*& ptr) noexcept {
+		assert(ti().cur < LT_CACHE_SIZE);
+		// Попытка записать в текущую ячейку
+		if (cache[ti().cur].push(la, ptr)) return;
+		// Поиск свободной ячейки в обе стороны по кольцу
+		size_t up = ti().cur, down = ti().cur;
+		while (true) {
+			// Сдвиг указателей
+			if (up == LT_CACHE_SIZE - 1) {
+				up = 0;
+			} else {
+				up++;
+			}
+			if (down == 0) {
+				down = LT_CACHE_SIZE - 1;
+			} else {
+				down--;
+			}
+			// Попытка сохранить
+			if (cache[up].push(la, ptr)) {
+				ti().cur = down;
+				return;
+			}
+			if (up == down) {
+				// Все занято
+				#ifdef LT_STAT
+				lite_thread_stat_t::ti().stat_cache_full++;
+				#endif
+				return;
+			}
+			if (cache[down].push(la, ptr)) {
+				ti().cur = up;
+				return;
+			}
+		}
 	}
 
 	// Извлечение из кэша
 	lite_actor_t* pop() noexcept {
-		if(next == (lite_actor_t*)NULL) return NULL;
-		return next.exchange(NULL);
+		assert(ti().cur < LT_CACHE_SIZE);
+		lite_actor_t* la = cache[ti().cur].pop();
+		if (la != NULL) return la;
+		size_t up = ti().cur, down = ti().cur;
+		while (true) {
+			// Сдвиг указателей
+			if (up == LT_CACHE_SIZE - 1) {
+				up = 0;
+			} else {
+				up++;
+			}
+			if (down == 0) {
+				down = LT_CACHE_SIZE - 1;
+			} else {
+				down--;
+			}
+			// Попытка прочитать
+			la = cache[up].pop();
+			if (la != NULL) {
+				ti().cur = down;
+				return la;
+			}
+			if (up == down) {
+				// Все свободно
+				return NULL;
+			}
+			la = cache[down].pop();
+			if (la != NULL) {
+				ti().cur = up;
+				return la;
+			}
+		}
 	}
 };
 
@@ -548,7 +642,7 @@ class alignas(64) lite_actor_t {
 	lite_actor_func_t la_func;			// Функция с окружением
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
-	bool in_cache;						// Помещен в кэш планирования запуска
+	std::atomic<lite_actor_t*>* in_cache; // Ячейка кэша где лежит указатель на этот актор
 	std::string name;					// Наименование актора
 
 	friend lite_thread_t;
@@ -556,7 +650,7 @@ protected:
 
 	//---------------------------------
 	// Конструктор
-	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), in_cache(false), resource(NULL) {
+	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), in_cache(NULL), resource(NULL) {
 	}
 
 	// Проверка готовности к запуску
@@ -586,6 +680,12 @@ protected:
 			lite_thread_stat_t::ti().stat_actor_not_run++;
 			#endif
 		} else if (resource_lock(resource)) { // Занимаем ресурс
+			std::atomic<lite_actor_t*>* ptr = in_cache;
+			if (ptr != NULL) { 
+				// Освобождение ячейки кэша
+				lite_actor_t* del = this;
+				ptr->compare_exchange_weak(del, NULL);
+			}
 			ti().la_next_run = NULL;
 			ti().la_now_run = this;
 			bool need_lock = (thread_max != 1); // Блокировка нужна только многопоточным акторам
@@ -602,7 +702,7 @@ protected:
 				lite_thread_stat_t::ti().stat_msg_run++;
 				#endif
 			}
-			in_cache = false;
+			in_cache = NULL;
 		}
 		actor_free++;
 		return;
@@ -641,7 +741,6 @@ private:
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
 		lite_actor_list_t la_list; // Список акторов
 		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
-		//alignas(64) std::atomic<lite_actor_t*> la_next_run;	// Следующий на выполнение актор
 		lite_actor_cache_t la_cache;		// Кэш акторов готовых к запуску
 	};
 
@@ -665,29 +764,12 @@ private:
 		// Проверка есть ли ресурс
 		if (la->resource != NULL && !la->resource->free()) {
 			// Запись в кэш ресурса
-			//lite_actor_t* nul = NULL;
-			//if (la->resource->la_next_run == (lite_actor_t*)NULL && la->resource->la_next_run.compare_exchange_weak(nul, la)) {
-			//	la->in_cache = true;
-			//#ifdef LT_STAT
-			//} else {
-			//	lite_thread_stat_t::ti().stat_cache_full++;
-			//#endif			
-			//}
-
-			la->resource->la_cache.push(la);
+			la->resource->la_cache.push(la, la->in_cache);
 			return;
 		}
 
 		// Помещение в глобальный кэш
-		si().la_cache.push(la);
-		//lite_actor_t* nul = NULL;
-		//if (si().la_next_run == (lite_actor_t*)NULL && si().la_next_run.compare_exchange_weak(nul, la)) {
-		//	la->in_cache = true;
-		//	#ifdef LT_STAT
-		//} else {
-		//	lite_thread_stat_t::ti().stat_cache_full++;
-		//	#endif			
-		//}
+		si().la_cache.push(la, la->in_cache);
 		if (!ti().need_wake_up) ti().need_wake_up = (la->resource == NULL || la->resource->free());
 	}
 
@@ -702,7 +784,7 @@ private:
 			} else {
 				#ifdef LT_STAT
 				lite_thread_stat_t::ti().stat_cache_bad++;
-				#endif			
+				#endif
 				la = NULL;
 			}
 		}
@@ -712,17 +794,14 @@ private:
 		#endif
 
 		// Проверка кэша используемого ресурса
-		//if(ti().lr_now_used != NULL && ti().lr_now_used->la_next_run != (lite_actor_t*)NULL) {
-		//	la = ti().lr_now_used->la_next_run.exchange(NULL);
-		//	if (la != NULL && la->is_ready()) {
-		//		return la;
-		//	}
-		//}
 		if (ti().lr_now_used != NULL) {
 			while(la = ti().lr_now_used->la_cache.pop()) {
 				if (la->is_ready()) {
 					return la;
 				}
+				#ifdef LT_STAT
+				lite_thread_stat_t::ti().stat_cache_bad++;
+				#endif
 			}
 		}
 
@@ -731,13 +810,10 @@ private:
 			if (la->is_ready()) {
 				return la;
 			}
+			#ifdef LT_STAT
+			lite_thread_stat_t::ti().stat_cache_bad++;
+			#endif
 		}
-		//if(si().la_next_run != (lite_actor_t*)NULL) {
-		//	la = si().la_next_run.exchange(NULL);
-		//	if (la != NULL && la->is_ready()) {
-		//		return la;
-		//	}
-		//}
 
 		#ifdef LT_STAT
 		lite_thread_stat_t::ti().stat_cache_found--;
@@ -760,7 +836,7 @@ private:
 		for (lite_actor_list_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
 			if ((*it)->is_ready()) {
 				ret = (*it);
-				ret->in_cache = true;
+				//ret->in_cache = true;
 				if(it != si().la_list.begin()) {
 					// Сдвиг активных ближе к началу
 					lite_actor_list_t::iterator it2 = it;
