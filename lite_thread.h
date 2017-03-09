@@ -400,17 +400,11 @@ public:
 	void push(lite_actor_t* la) noexcept {
 		if(next == (lite_actor_t*)NULL) {
 			lite_actor_t* nul = NULL;
-			if(next.compare_exchange_weak(nul, la)) {
-			#ifdef LT_STAT
-			} else {
-			lite_thread_stat_t::ti().stat_cache_full++;
-			#endif	
-			}
-		#ifdef LT_STAT
-		} else {
-			lite_thread_stat_t::ti().stat_cache_full++;
-		#endif	
+			if (next.compare_exchange_weak(nul, la)) return;
 		}
+		#ifdef LT_STAT
+		lite_thread_stat_t::ti().stat_cache_full++;
+		#endif	
 	}
 
 	// Извлечение из кэша
