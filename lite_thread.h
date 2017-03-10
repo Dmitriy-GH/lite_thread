@@ -77,6 +77,7 @@
 #include <assert.h>
 #include <time.h>
 #include <string.h>
+#include <stdarg.h>
 
 //#ifdef _DEBUG
 //#ifndef LT_DEBUG
