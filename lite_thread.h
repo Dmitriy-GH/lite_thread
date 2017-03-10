@@ -77,6 +77,7 @@
 #include <assert.h>
 #include <time.h>
 #include <string.h>
+#include <stdarg.h>
 
 //#ifdef _DEBUG
 //#ifndef LT_DEBUG
@@ -231,12 +232,14 @@ static int64_t lite_time_now() {
 	return (int64_t)(time_span.count() * 1000);
 }
 
-//----------------------------------------------------------------------------------
-//-------- СООБЩЕНИE ---------------------------------------------------------------
-//----------------------------------------------------------------------------------
 class lite_actor_t;
 class lite_thread_t;
 class lite_msg_queue_t;
+static void lite_log(const char* data, ...) noexcept;
+
+//----------------------------------------------------------------------------------
+//-------- СООБЩЕНИE ---------------------------------------------------------------
+//----------------------------------------------------------------------------------
 #pragma warning( push )
 #pragma warning( disable : 4200 ) // MSVC не нравится data[]
 // Сообщение
@@ -956,6 +959,7 @@ protected:
 	static void clear() {
 		lite_lock_t lck(si().mtx_list); // Блокировка
 		for (auto& w : si().la_list) delete w;
+		si().la_list.clear();
 	}
 };
 
@@ -1211,6 +1215,7 @@ public: //-------------------------------------
 			delete w;
 			w = NULL;
 		}
+		si().worker_list.clear();
 		// Дообработка необработанных сообщений. В т.ч. о завершении работы
 		work_msg();
 		// Очистка памяти под акторы
@@ -1238,6 +1243,58 @@ public: //-------------------------------------
 		return n;
 	}
 };
+
+//----------------------------------------------------------------------------------
+//----- ВЫВОД В ЛОГ ----------------------------------------------------------------
+//----------------------------------------------------------------------------------
+#ifndef LITE_LOG_BUF_SIZE
+#define LITE_LOG_BUF_SIZE 1024
+#endif
+
+// Вывод по умолчанию в консоль. При необходимости зарегистрировать свой актор "log"
+static void lite_log_write(lite_msg_t* msg, void* env) {
+	msg->data[msg->size - 1] = 0;
+	printf("%s\n", msg->data + 9);
+}
+
+// Запись в лог
+static void lite_log(const char* data, ...) noexcept {
+	va_list ap;
+	va_start(ap, data);
+	lite_msg_t* msg = lite_msg_t::create(LITE_LOG_BUF_SIZE);
+
+	time_t rawtime;
+	time(&rawtime);
+
+	size_t size = 0;
+	char* p = msg->data;
+
+#ifdef WIN32
+	struct tm timeinfo;
+	localtime_s(&timeinfo, &rawtime);
+	size += sprintf_s(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d ", timeinfo.tm_mday, timeinfo.tm_mon, timeinfo.tm_year % 100, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+	p += size;
+	size += vsprintf_s(p, LITE_LOG_BUF_SIZE - size, data, ap);
+	p += size;
+#else
+	struct tm * timeinfo = localtime(&rawtime);
+	size += snprintf(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d ", timeinfo->tm_mday, timeinfo->tm_mon, timeinfo->tm_year % 100, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+	p += size;
+	size += vsnprintf(p, LITE_LOG_BUF_SIZE - size, data, ap);
+	p += size;
+#endif
+	va_end(ap);
+	assert(size < LITE_LOG_BUF_SIZE);
+	*p = 0;
+	// Отправка на вывод
+	lite_actor_t* log = lite_actor_t::name_find("log");
+	if(log == NULL) { // Нет актора "log"
+		// Регистрация lite_log_write()
+		log = lite_actor_t::get(lite_log_write, NULL);
+		lite_actor_t::name_set(log, "log");
+	}
+	lite_thread_t::run(msg, log);
+}
 
 //----------------------------------------------------------------------------------
 //----- ОБЕРТКИ --------------------------------------------------------------------
@@ -1280,12 +1337,12 @@ static lite_actor_t* lite_actor_get(const std::string& name) noexcept {
 
 // Создание актора из объекта унаследованного от lite_worker_t
 template <typename T>
-static lite_actor_t* lite_actor_create() {
+static lite_actor_t* lite_actor_create() noexcept {
 	return lite_worker_t::create<T>();
 }
 
 template <typename T>
-static lite_actor_t* lite_actor_create(const std::string& name) {
+static lite_actor_t* lite_actor_create(const std::string& name) noexcept {
 	return lite_worker_t::create<T>(name);
 }
 

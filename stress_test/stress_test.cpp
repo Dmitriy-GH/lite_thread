@@ -1,4 +1,5 @@
-﻿/* Тест работоспособности
+﻿/* Тест работоспособности.
+При успешном завершении выдает в конце "... test OK ..."
 
 Создается ACTOR_COUNT акторов обработчиков для каждого сообщения.
 Запускается MSG_COUNT сообщений (от количества сообщений зависит сколько максимум потоков потребуется)
@@ -238,7 +239,7 @@ void finish_func(lite_msg_t* msg, void* env) {
 	} else if(time > time_alert) {
 		// Вывод текущего состояния раз 0.5 сек
 		time_alert += 500;
-		printf("%5lld: worked %d msg\n", lite_time_now(), (int)msg_count);
+		lite_log("%5lld: worked %d msg", lite_time_now(), (int)msg_count);
 	}
 	// Проверки пройдены, запуск следующего
 	lite_thread_run(msg, start);
@@ -246,8 +247,8 @@ void finish_func(lite_msg_t* msg, void* env) {
 
 int main()
 {
-	printf("compile %s %s\n", __DATE__, __TIME__);
-	printf("%5lld: START workers: %d  messages: %d  time: %d sec\n", lite_time_now(), ACTOR_COUNT, MSG_COUNT, TEST_TIME);
+	lite_log("compile %s %s", __DATE__, __TIME__);
+	lite_log("START workers: %d  messages: %d  time: %d sec", ACTOR_COUNT, MSG_COUNT, TEST_TIME);
 	// Инициализация указателей
 	start = lite_actor_get(start_func);
 	lite_actor_parallel(5, start);
@@ -267,6 +268,7 @@ int main()
 	//lite_resource_t* res2 = lite_resource_create("CPU2", 2);
 	lite_resource_set("CPU", start);
 	lite_resource_set("CPU", finish);
+	lite_resource_set("CPU", lite_actor_get("log"));
 
 	// Создание сообщений
 	for(size_t i = 0; i < MSG_COUNT; i++) {
@@ -278,21 +280,23 @@ int main()
 		for(size_t j = 0; j < ACTOR_COUNT; j++) d->map[j] = worker_list[j];
 		lite_thread_run(msg, start);
 	}
-
-	lite_thread_end(); // Ожидание окончания
+	
+	lite_thread_end(); // Ожидание окончания расчета
 
 	if(msg_finished != MSG_COUNT) {
 		printf("ERROR: lost %d messages\n", MSG_COUNT - msg_finished);
 	} else if (worker_t::count_end() != ACTOR_COUNT) {
 		printf("ERROR: lost %d worker finish\n", ACTOR_COUNT - worker_t::count_end());
 	}else if (msg_total != msg_count * STEP_COUNT) {
-			printf("ERROR: total %d need %d\n", (int)msg_total, msg_count * STEP_COUNT);
+		printf("ERROR: total %d need %d\n", (int)msg_total, msg_count * STEP_COUNT);
 	} else {
-		printf("%5lld: test OK worked: %d msg (min %d max %d) transfer: %d msg  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, (int)msg_count_min, (int)msg_count_max, (int)msg_total, MSG_COUNT);
+		printf("%5lld: test OK worked: %d msg (min %d max %d) transfer: %d msg/sec.  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, (int)msg_count_min, (int)msg_count_max, (int)msg_total / TEST_TIME, MSG_COUNT);
 	}
 	printf("compile %s %s with %s\n", __DATE__, __TIME__, LOCK_TYPE_LT);
+
+
 #ifdef _DEBUG
-	printf("Press any key ...\n");
+	printf("Press any key ...");
 	getchar();
 #endif
 	return 0;
