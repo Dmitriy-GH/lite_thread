@@ -1033,6 +1033,16 @@ public:
 	// Создание именованного объекта
 	template <typename T>
 	static lite_actor_t* create(const std::string& name) {
+		// Акторы log и error можно создавать только явно, т.к. они должны удаляться после всех, чтобы обработать записи из деструкторов
+		if(name == "log") {
+			lite_error("Actor 'log' can`t be created lite_worker_t::create()");
+			return NULL;
+		}
+		if (name == "error") {
+			lite_error("Actor 'log' can`t be created lite_worker_t::create()");
+			return NULL;
+		}
+
 		lite_worker_t* w = (lite_worker_t*)new T;
 		lite_lock_t lck(si().mtx_list); // Блокировка
 		si().la_list.push_back(w);
@@ -1094,6 +1104,7 @@ class alignas(64) lite_thread_t {
 
 	// Создание потока
 	static void create_thread() noexcept {
+		if (si().stop) return;
 		lite_thread_t* lt;
 		{
 			lite_lock_t lck(si().mtx); // Блокировка
@@ -1209,7 +1220,7 @@ class alignas(64) lite_thread_t {
 			bool stop = false;
 			{
 				#ifdef LT_DEBUG
-				printf("         thread#%d sleep\n", (int)lt->num);
+				lite_log("thread#%d sleep", (int)lt->num);
 				#endif
 				if(thread_work() == 0) si().cv_end.notify_one(); // Если никто не работает, то разбудить ожидание завершения
 				lite_thread_t* wf = si().worker_free;
@@ -1221,11 +1232,11 @@ class alignas(64) lite_thread_t {
 				if(lt->cv.wait_for(lck, std::chrono::seconds(1)) == std::cv_status::timeout) {	// Проснулся по таймауту
 					stop = (lt->num == si().thread_count - 1);	// Остановка потока с наибольшим номером
 					#ifdef LT_DEBUG
-					printf("         thread#%d wake up (total: %d, work: %d)\n", (int)lt->num, (int)si().thread_count, (int)thread_work());
+					lite_log("thread#%d wake up (total: %d, work: %d)", (int)lt->num, (int)si().thread_count, (int)thread_work());
 					#endif
 				} else {
 					#ifdef LT_DEBUG
-					printf("         thread#%d wake up\n", (int)lt->num);
+					lite_log("thread#%d wake up", (int)lt->num);
 					#endif
 					#ifdef LT_STAT
 					lite_thread_stat_t::ti().stat_thread_wake_up++;
@@ -1248,7 +1259,7 @@ class alignas(64) lite_thread_t {
 		si().thread_count--;
 		si().cv_end.notify_one(); // пробуждение end()
 		#ifdef LT_DEBUG
-		printf("         thread#%d stop\n", (int)lt->num);
+		lite_log("thread#%d stop", (int)lt->num);
 		#endif
 
 	}
@@ -1265,12 +1276,12 @@ public: //-------------------------------------
 		// Рассчет еще не начался
 		if(si().thread_count == 1 && thread_work() == 0) {
 			#ifdef LT_DEBUG
-			printf("         --- wait start ---\n");
+			lite_log("--- wait start ---");
 			#endif	
 			std::this_thread::sleep_for(std::chrono::milliseconds(100)); // для запуска потоков
 		}
 		#ifdef LT_DEBUG
-		printf("         --- wait all ---\n");
+		lite_log("--- wait all ---");
 		#endif	
 		// Ожидание завершения расчетов. 
 		while(thread_work() > 0) {
@@ -1278,7 +1289,7 @@ public: //-------------------------------------
 			si().cv_end.wait_for(lck, std::chrono::milliseconds(300));
 		}
 		#ifdef LT_DEBUG
-		printf("         --- stop all ---\n");
+		lite_log("--- stop all ---");
 		#endif	
 		// Остановка потоков
 		si().stop = true;
@@ -1302,8 +1313,9 @@ public: //-------------------------------------
 		}
 		// Завершены все потоки
 		assert(si().thread_count == 0);
-		lite_lock_t lck(si().mtx); // Блокировка
+
 		// Очистка данных потоков
+		lite_lock_t lck(si().mtx); // Блокировка
 		for (auto& w : si().worker_list) {
 			assert(w != NULL);
 			delete w;
@@ -1311,10 +1323,13 @@ public: //-------------------------------------
 		}
 		si().worker_list.clear();
 		si().worker_free = NULL;
-		// Дообработка необработанных сообщений. В т.ч. о завершении работы
+		// Дообработка необработанных сообщений. 
+		work_msg();
+		// Очистка памяти под акторы-объекты
+		lite_worker_t::clear();
+		// Дообработка сообщений из деструкторов объектов
 		work_msg();
 		// Очистка памяти под акторы
-		lite_worker_t::clear();
 		lite_actor_t::clear();
 		// Очистка памяти под ресурсы
 		lite_resource_t::clear();
