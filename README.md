@@ -101,7 +101,7 @@ lite_thread_run(msg, actor1); //Отправка msg в actor1()
 
 Создание объектов класса делает библиотека
 
-**lite_actor_t* lite_actor_create<my_worker_t>("my name")**
+**lite_actor_t* lite_actor_create< my_worker_t >("my name")**
 
 поэтому не надо отслеживать указатели, акторы-объекты будут удалены автоматичести по завершению работы.
 
@@ -111,7 +111,7 @@ lite_thread_run(msg, actor1); //Отправка msg в actor1()
 
 При использовании класса можно дополнительно установить фильтр только на известные типы сообщений:
 
-**type_add(lite_msg_type<T>())**
+**type_add(lite_msg_type< T >())**
 
 ### Ограничение ресурсов
 
