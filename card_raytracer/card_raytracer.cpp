@@ -179,6 +179,7 @@ class alignas(64) writer_t : public lite_worker_t {
 	FILE *out;
 public:
 	writer_t() {
+		type_add(lite_msg_type<msg_t>()); // Разрешение принимать сообщение типа msg_t
 		cache.assign(WIDTH * HEIGHT, (lite_msg_t*)NULL); // Заполнение кэша нулями
 		next_write = 0; 
 		out = fopen(FILE_NAME, "w");
@@ -190,6 +191,7 @@ public:
 		fclose(out);
 	}
 
+	// Обработка сообщения
 	void recv(lite_msg_t* msg) {
 		msg_t* d = lite_msg_data<msg_t>(msg);
 		assert(d != NULL);
@@ -225,6 +227,7 @@ public:
 	worker_t() {
 		writer = lite_actor_get("writer"); // Получение писателя по имени
 		assert(writer != NULL);
+		type_add(lite_msg_type<msg_t>()); // Разрешение принимать сообщение типа msg_t
 	}
 
 	// Расчет одного пикселя
@@ -239,6 +242,7 @@ public:
 	// Прием сообщения
 	void recv(lite_msg_t* msg) override {
 		msg_t* d = lite_msg_data<msg_t>(msg); // Указатель на содержимое
+		assert(d != NULL);
 		calc(d->x, d->y, d->result); // Расчет
 		lite_thread_run(msg, writer); // Отправка
 	}
@@ -252,10 +256,8 @@ void actor_start(int threads) {
 	lite_actor_t* worker = lite_actor_create<worker_t>();
 	// Глубина распараллеливания считателя
 	lite_actor_parallel(threads, worker);
-	// Общее ограничение CPU
-	lite_resource_t* res = lite_resource_create("CPU", threads);
-	writer->resource_set(res);
-	worker->resource_set(res);
+	// Ограничение количества потоков
+	lite_thread_max(threads);
 	// Создание сообщений
 	int idx = 0; // номер сообщения
 	for (int y = HEIGHT; y--;) {
