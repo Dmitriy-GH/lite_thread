@@ -355,7 +355,7 @@ public:
 		size_t time_ms = lite_time_now();
 		printf("msg_send/sec   %llu\n", (uint64_t)si().stat_msg_send * 1000 / (time_ms > 0 ? time_ms : 1)); // Сообщений в секунду
 		printf("\n");
-		if (si().stat_msg_create != si().stat_msg_erase) printf("!!! ERROR: lost %lld messages\n\n", (int64_t)si().stat_msg_create - si().stat_msg_erase); // Утечка памяти
+		if (si().stat_msg_create != si().stat_msg_erase) printf("!!! ERROR: lost %lld messages (erase %lld)\n\n", (int64_t)si().stat_msg_create - si().stat_msg_erase, (int64_t)si().stat_msg_erase); // Утечка памяти
 	}
 };
 
@@ -439,6 +439,8 @@ private:
 	struct static_info_t {
 		type_name_idx_t tn_idx; // Список типов
 		lite_mutex_t mtx;		// Блокировка для доступа к tn_idx
+		std::atomic<size_t> msg_erase = {0};
+		std::atomic<size_t> msg_create = { 0 };
 	};
 
 	static static_info_t& si() noexcept {
@@ -464,6 +466,7 @@ public:
 		}
 		#ifdef LT_STAT
 		lite_thread_stat_t::ti().stat_msg_create++;
+		si().msg_create++;
 		#endif		
 		return msg;
 	}
@@ -486,8 +489,13 @@ public:
 			free(msg);
 			#ifdef LT_STAT
 			lite_thread_stat_t::ti().stat_msg_erase++;
+			si().msg_erase++;
 			#endif		
 		}
+	}
+
+	static void print() {
+		printf("messages create: %lld  erase: %lld msg\n", (int64_t)si().msg_create, (int64_t)si().msg_erase);
 	}
 
 	// Указатель на данные
@@ -1420,6 +1428,9 @@ class alignas(64) lite_thread_t {
 				break;
 			}
 		}
+		#ifdef LT_STAT
+		lite_thread_stat_t::ti().store();
+		#endif
 		lite_lock_t lck(si().mtx); // Блокировка
 		lt->is_end = true;
 		lt->is_free = false;
@@ -1502,6 +1513,7 @@ public: //-------------------------------------
 		lite_resource_t::clear();
 		#ifdef LT_STAT
 		lite_thread_stat_t::ti().print_stat();
+		lite_msg_t::print();
 		#endif		
 		#ifdef LT_DEBUG
 		printf("         !!! end !!!\n");
