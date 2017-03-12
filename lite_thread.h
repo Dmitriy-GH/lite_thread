@@ -1673,7 +1673,7 @@ static lite_actor_t* lite_actor_get(const std::string& name) noexcept {
 // Создание актора из объекта унаследованного от lite_worker_t
 template <typename T>
 static lite_actor_t* lite_actor_create() noexcept {
-	static std::atomic<size_t> cnt = 0;
+	static std::atomic<size_t> cnt = {0};
 	std::string name = typeid(T).name();
 	name += "#";
 	name += std::to_string(cnt++);
