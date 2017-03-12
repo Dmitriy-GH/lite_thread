@@ -28,20 +28,17 @@
 
 ### Простейший пример использования
 
-**void actor1(lite_msg_t* msg, void* env) {// Обработчик сообщения }**
+	**void actor1(lite_msg_t* msg, void* env)** {
+		// Обработчик сообщения 
+	}
 
-void main() {
-
-	lite_msg_t* msg = lite_msg_create< int >(); // Создание сообщения 
-
-	int* x = lite_msg_data< int >(msg); // Указатель на содержимое сообщения
-
-	*x = 100500; // Заполнение сообщения
-
-	lite_thread_run(msg, actor1); //Отправка msg в actor1()
-	lite_thread_end(); // Ожидание завершения работы
-
-}
+	void main() {
+		lite_msg_t* msg = lite_msg_create< int >(); // Создание сообщения 
+		int* x = lite_msg_data< int >(msg); // Указатель на содержимое сообщения
+		*x = 100500; // Заполнение сообщения
+		lite_thread_run(msg, actor1); //Отправка msg в actor1()
+		lite_thread_end(); // Ожидание завершения работы
+	}
 
 
 ### Сообщения
