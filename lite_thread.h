@@ -1602,7 +1602,6 @@ static void lite_error(const char* data, ...) noexcept {
 	size += vsprintf_s(p, LITE_LOG_BUF_SIZE - size, data, ap);
 	p += size;
 	#else
-	struct tm * timeinfo = localtime(&rawtime);
 	size += snprintf(p, LITE_LOG_BUF_SIZE - size, "!!! ERROR: ");
 	p += size;
 	size += vsnprintf(p, LITE_LOG_BUF_SIZE - size, data, ap);
