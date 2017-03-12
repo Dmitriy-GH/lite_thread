@@ -439,8 +439,6 @@ private:
 	struct static_info_t {
 		type_name_idx_t tn_idx; // Список типов
 		lite_mutex_t mtx;		// Блокировка для доступа к tn_idx
-		std::atomic<size_t> msg_erase = {0};
-		std::atomic<size_t> msg_create = { 0 };
 	};
 
 	static static_info_t& si() noexcept {
@@ -466,7 +464,6 @@ public:
 		}
 		#ifdef LT_STAT
 		lite_thread_stat_t::ti().stat_msg_create++;
-		si().msg_create++;
 		#endif		
 		return msg;
 	}
@@ -489,13 +486,8 @@ public:
 			free(msg);
 			#ifdef LT_STAT
 			lite_thread_stat_t::ti().stat_msg_erase++;
-			si().msg_erase++;
 			#endif		
 		}
-	}
-
-	static void print() {
-		printf("messages create: %lld  erase: %lld msg\n", (int64_t)si().msg_create, (int64_t)si().msg_erase);
 	}
 
 	// Указатель на данные
@@ -901,7 +893,6 @@ private:
 		assert(la != NULL);
 		if (!la->is_ready() || la->in_cache) return;
 
-		//if (ti().la_now_run != NULL && ti().la_now_run->msg_queue.empty() && ti().la_next_run == NULL && (ti().lr_now_used == NULL || ti().lr_now_used == la->resource)) {
 		if (ti().la_now_run != NULL && ti().la_now_run->msg_queue.empty() && ti().la_next_run == NULL && ti().lr_now_used == la->resource) {
 			// Выпоняется последнее задание текущего актора, запоминаем в локальный кэш потока для обработки его следующим
 			ti().la_next_run = la;
@@ -911,15 +902,6 @@ private:
 		// Запись в кэш ресурса
 		la->resource->la_cache.push(la);
 
-		//if (la->resource != NULL) {
-		//	// Запись в кэш ресурса
-		//	la->resource->la_cache.push(la);
-		//} else {
-		//	// Помещение в глобальный кэш
-		//	si().la_cache.push(la);
-		//}
-		// Установка флага необходимости пробуждения другого потока
-		//if (!ti().need_wake_up) ti().need_wake_up = (la->resource == NULL || la->resource->free());
 		if (!ti().need_wake_up) ti().need_wake_up = la->resource->free();
 	}
 
@@ -947,21 +929,6 @@ private:
 				}
 			}
 		}
-		//// Проверка кэша используемого ресурса
-		//if (ti().lr_now_used != NULL) {
-		//	while(la = ti().lr_now_used->la_cache.pop()) {
-		//		if (la->is_ready()) {
-		//			return la;
-		//		}
-		//	}
-		//}
-
-		//// Проверка глобального кэша
-		//while (la = si().la_cache.pop()) {
-		//	if (la->is_ready()) {
-		//		return la;
-		//	}
-		//}
 
 		return NULL;
 	}
@@ -1043,7 +1010,6 @@ private:
 		si().la_idx.clear();
 		si().la_name_idx.clear();
 		si().la_list.clear();
-		//si().la_cache.pop();
 	}
 
 public: //-------------------------------------------------------------
@@ -1214,7 +1180,7 @@ public:
 			return NULL;
 		}
 		if (name == "error") {
-			lite_error("Actor 'log' can`t be created lite_worker_t::create()");
+			lite_error("Actor 'error' can`t be created lite_worker_t::create()");
 			return NULL;
 		}
 
@@ -1226,17 +1192,6 @@ public:
 		return la;
 	}
 	
-	// Создание безымянного объекта
-	//template <typename T>
-	//static lite_actor_t* create() {
-	//	static std::atomic<size_t> cnt = 0;
-	//	std::string name = typeid(T).name();
-	//	name += "#";
-	//	name += std::to_string(cnt++);
-	//	return create<T>(name);
-	//}
-
-
 friend lite_thread_t;
 protected:
 	// Удаление всех объектов
@@ -1417,7 +1372,6 @@ class alignas(64) lite_thread_t {
 					lite_thread_stat_t::ti().stat_thread_wake_up++;
 					#endif
 				}
-				//if (si().worker_free == lt) si().worker_free = NULL;
 				if (si().worker_free == lt) {
 					wf = lt;
 					si().worker_free.compare_exchange_weak(wf, NULL);
@@ -1429,7 +1383,7 @@ class alignas(64) lite_thread_t {
 			}
 		}
 		#ifdef LT_STAT
-		lite_thread_stat_t::ti().store();
+		lite_thread_stat_t::ti().store(); // Сохранение счетчиков потока
 		#endif
 		lite_lock_t lck(si().mtx); // Блокировка
 		lt->is_end = true;
@@ -1513,7 +1467,6 @@ public: //-------------------------------------
 		lite_resource_t::clear();
 		#ifdef LT_STAT
 		lite_thread_stat_t::ti().print_stat();
-		lite_msg_t::print();
 		#endif		
 		#ifdef LT_DEBUG
 		printf("         !!! end !!!\n");
