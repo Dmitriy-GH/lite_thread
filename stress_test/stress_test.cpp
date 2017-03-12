@@ -1,5 +1,5 @@
 ﻿/* Тест работоспособности.
-При успешном завершении выдает в конце "... test OK ..."
+При успешном завершении выдает в конце "Test OK. worked: ... msg (min ... max ...)"
 
 Создается ACTOR_COUNT акторов обработчиков для каждого сообщения.
 Запускается MSG_COUNT сообщений (от количества сообщений зависит сколько максимум потоков потребуется)
@@ -30,6 +30,7 @@
 //#define LT_DEBUG
 #define LT_STAT
 //#define LT_STAT_QUEUE
+#define LT_DEBUG_LOG
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -38,10 +39,6 @@
 #include <vector>
 #include <stdio.h>
 #include <string.h>
-
-//---------------------------------------------------------------------
-// Типы сообщений
-#define TYPE_DATA  1
 
 //---------------------------------------------------------------------
 std::atomic<int> msg_count = { 0 }; // Счетчик сообщений дошедших до финиша
@@ -65,44 +62,46 @@ struct data_t {
 };
 
 //---------------------------------------------------------------------
-// Указатели на акторы начала и конца обработки
-lite_actor_t* finish;
-lite_actor_t* start;
+// Обработчик ошибок
+static void error_set(lite_msg_t* msg, void* env) {
+	msg->data[msg->size() - 1] = 0;
+	lite_log(msg->data);
+	stop_all = true;
+}
+
+
+//---------------------------------------------------------------------
 
 class alignas(64) worker_t : public lite_worker_t {
 	static std::atomic<int> worker_end; // Счетчик завершивших работу
 
 	int count = 0; // Количество вызовов
-	lite_actor_t* i_am; // Актор указывающий на этот объект
 	std::atomic<int> parallel = {0}; // Количество парралельных запусков
+	// Указатели на акторы начала и конца обработки
+	lite_actor_t* finish;
 
 	// Обработка сообщения
 	void work(lite_msg_t* msg) {
 		parallel++;
 		if(parallel != 1) {
-			printf("ERROR: parralel %d\n", (int)parallel);
-			stop_all = true;
+			lite_error("parralel %d", (int)parallel);
 			return;
 		}
 		data_t* d = lite_msg_data<data_t>(msg); // Указатель на содержимое сообщения
-		if(d == NULL) { // Неверный размер сообщения
-			printf("ERROR: wrong msg size\n");
-			stop_all = true;
+		if(d == NULL) { // Неверный тип сообщения
+			lite_error("wrong msg type");
 			return;
 		}
 		if(d->worker_num < 0 || d->worker_num >= ACTOR_COUNT) { // Индекс за пределами массива
-			printf("ERROR: worker_num = %d\n", (int)d->worker_num);
-			stop_all = true;
+			lite_error("worker_num = %d", (int)d->worker_num);
 			return;
 		}
-		if(d->map[d->worker_num] != i_am) { // Сообщение пришло не тому обработчику
-			printf("ERROR: wrong worker\n");
-			stop_all = true;
+		if(d->map[d->worker_num] != handle()) { // Сообщение пришло не тому обработчику
+			lite_error("wrong worker");
 			return;
 		}
 		if (d->mark[d->worker_num]) { // Сообщение уже обработано этим обработчиком
-			printf("ERROR: msg already worked\n");
-			stop_all = true;
+			lite_error("msg already worked");
 			return;
 		}
 		// Отметка что актор пройден
@@ -146,29 +145,22 @@ class alignas(64) worker_t : public lite_worker_t {
 	}
 
 	void recv(lite_msg_t* msg) override {
-		switch (msg->type) {
-		case TYPE_DATA:
 			work(msg);
-			break;
-
-		default:
-			printf("ERROR: thread#%d unknown msg type %d\n", (int)lite_thread_num(), msg->type);
-			stop_all = true;
-		}
 	}
 
 public:
 	// Конструктор
 	worker_t() {
-		i_am = handle();
+		finish = lite_actor_get("finish");
 		count = 0;
+		//type_add(lite_msg_type<data_t>());
 	}
 
 	// Завершение работы актора
 	~worker_t() {
 		msg_total += count;
 		worker_end++;
-		if (count == 0) printf("WARNING: worker count = 0\n");
+		if (count == 0 && !stop_all) printf("WARNING: worker count = 0\n");
 		return;
 	}
 
@@ -187,9 +179,8 @@ std::atomic<int> worker_t::worker_end = { 0 };  // Счетчик заверши
 // Подготовка сообщения и отправка на обработку
 void start_func(lite_msg_t* msg, void* env) {
 	data_t* d = lite_msg_data<data_t>(msg);  // Указатель на содержимое сообщения
-	if(d == NULL || msg->type != TYPE_DATA) {
-		printf("ERROR: wrong msg size or type\n");
-		stop_all = true;
+	if(d == NULL) {
+		lite_error("start: wrong msg type");
 		return;
 	}
 	// Очистка отметок выполнения
@@ -206,14 +197,9 @@ void start_func(lite_msg_t* msg, void* env) {
 //---------------------------------------------------------------------
 // Проверка заполнения сообщения
 void finish_func(lite_msg_t* msg, void* env) {
-	if(msg->type != TYPE_DATA) {
-		printf("ERROR: wrong msg type\n");
-		return;
-	}
 	data_t* d = lite_msg_data<data_t>(msg); // Указатель на содержимое сообщения
-	if (d == NULL) { // Неверный размер сообщения
-		printf("ERROR: wrong msg size\n");
-		stop_all = true;
+	if (d == NULL) {
+		lite_error("finish: wrong msg type");
 		return;
 	}
 	// Проверка прохождения всех обработчиков
@@ -222,8 +208,7 @@ void finish_func(lite_msg_t* msg, void* env) {
 		if (d->mark[i]) count++;
 	}
 	if(count != STEP_COUNT) {
-		printf("ERROR: skipped %d actors\n", (int)(ACTOR_COUNT - count));
-		stop_all = true;
+		lite_error("skipped %d actors", (int)(ACTOR_COUNT - count));
 		return;
 	}
 
@@ -242,38 +227,41 @@ void finish_func(lite_msg_t* msg, void* env) {
 		lite_log("%5lld: worked %d msg", lite_time_now(), (int)msg_count);
 	}
 	// Проверки пройдены, запуск следующего
+	static lite_actor_t* start = NULL;
+	if (start == NULL) start = lite_actor_get("start");
 	lite_thread_run(msg, start);
 }
+
+
 
 int main()
 {
 	lite_log("compile %s %s", __DATE__, __TIME__);
 	lite_log("START workers: %d  messages: %d  time: %d sec", ACTOR_COUNT, MSG_COUNT, TEST_TIME);
+	// Установка обработчика ошибок
+	lite_actor_t* error = lite_actor_get(error_set);
+	lite_actor_name(error, "error");
+
 	// Инициализация указателей
-	start = lite_actor_get(start_func);
+	lite_actor_t* start = lite_actor_get(start_func);
 	lite_actor_parallel(5, start);
-	finish = lite_actor_get(finish_func);
+	lite_actor_name(start, "start");
+	lite_actor_t* finish = lite_actor_get(finish_func);
 	lite_actor_parallel(5, finish);
+	lite_actor_name(finish, "finish");
 
 	lite_actor_t* worker_list[ACTOR_COUNT];
 	for(size_t i = 0; i < ACTOR_COUNT; i++) {
 		worker_list[i] = lite_actor_create<worker_t>();
 	}
 
-	// Установка ресурса "CPU"
-	lite_resource_t* res = lite_resource_create("CPU", CPU_MAX);
-	for (size_t i = 0; i < ACTOR_COUNT; i++) {
-		worker_list[i]->resource_set(res);
-	}
-	//lite_resource_t* res2 = lite_resource_create("CPU2", 2);
-	lite_resource_set("CPU", start);
-	lite_resource_set("CPU", finish);
-	lite_resource_set("CPU", lite_actor_get("log"));
+	// Установка ограничения количества потоков
+	lite_thread_max(CPU_MAX);
 
 	// Создание сообщений
 	for(size_t i = 0; i < MSG_COUNT; i++) {
 		lite_msg_t* msg;
-		msg = lite_msg_create<data_t>(TYPE_DATA);
+		msg = lite_msg_create<data_t>();
 		data_t* d = lite_msg_data<data_t>(msg);  // Указатель на содержимое сообщения
 		d->rand = i;
 		d->count_all = 0;
@@ -290,7 +278,7 @@ int main()
 	}else if (msg_total != msg_count * STEP_COUNT) {
 		printf("ERROR: total %d need %d\n", (int)msg_total, msg_count * STEP_COUNT);
 	} else {
-		printf("%5lld: test OK worked: %d msg (min %d max %d) transfer: %d msg/sec.  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, (int)msg_count_min, (int)msg_count_max, (int)msg_total / TEST_TIME, MSG_COUNT);
+		printf("Test OK. worked: %d msg (min %d max %d)\n", (int)msg_count, (int)msg_count_min, (int)msg_count_max);
 	}
 	printf("compile %s %s with %s\n", __DATE__, __TIME__, LOCK_TYPE_LT);
 

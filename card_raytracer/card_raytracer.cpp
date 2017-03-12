@@ -1,8 +1,25 @@
 ﻿/**
 Исходный тест https://github.com/Mark-Kovalyov/CardRaytracerBenchmark/blob/master/cpp/card-raytracer.cpp
 
-Тест производительности.
+Пример преобразования однопоточного кода генератора картинки img.ppm размером 512*512
+img.ppm можно посмотреть каким-нибудь просмотрщиком изображений, например IrfanView
 
+Исходный вариант решения (original()) открывает файл, в двух вложенных циклах (высота, ширина) последовательно
+обсчитывает каждый пиксель изображения и сохраняет в файл. 
+
+По модели акторов создается три актора:
+1. Считатель. Обсчитывает один пиксель. Код Считателя потокобезопасный, т.к. не имеет меняющегося окружения, 
+   поэтому его можно запускать параллельно.
+2. Упорядочиватель. Однопоточный. Восстанавливает порядок следования сообщений.
+3. Писатель. Однопоточный. Пишет результат в файл.
+
+В начале работы (actor_start(int threads)) создается 260 тыс. сообщений, заданий на обсчет каждой точки и 
+отправляются Считателю. По окончанию обсчета точки Считатель отправляет результат Упорядочивателю, который
+кэширует пришедшие не по порядку сообщения и отправляет Писателю сообщения в соответствии с изначальным 
+порядком.
+
+
+-----------------------------------------------------------------------------------------------------------
 Запускать с параметром количество потоков
 
 card_raytracer.exe [threads]
@@ -22,12 +39,13 @@ card_raytracer.exe [threads]
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include "../lite_thread.h"
+#include "../lite_thread_util.h"
 
 #define WIDTH  512
 #define HEIGHT 512
 
-#define FILE_NAME "1.ppm"
+#define FILE_NAME "img.ppm"
+
 
 
 struct Vector {
@@ -166,7 +184,7 @@ void original() {
 //----------------------------------------------------------------------
 //Вариант с акторами
 struct msg_t {
-	int num;
+	size_t idx;
 	int x;
 	int y;
 	Vector result;
@@ -174,13 +192,10 @@ struct msg_t {
 
 // Писатель (однопоточный)
 class alignas(64) writer_t : public lite_worker_t {
-	std::vector<lite_msg_t*> cache; // Кэш для пришедших не по порядку
-	size_t next_write; // Следующий на запись
 	FILE *out;
 public:
 	writer_t() {
-		cache.assign(WIDTH * HEIGHT, (lite_msg_t*)NULL); // Заполнение кэша нулями
-		next_write = 0; 
+		type_add(lite_msg_type<msg_t>()); // Разрешение принимать сообщение типа msg_t
 		out = fopen(FILE_NAME, "w");
 		assert(out != NULL);
 		fprintf(out, "P6 %d %d 255 ", WIDTH, HEIGHT);
@@ -190,25 +205,11 @@ public:
 		fclose(out);
 	}
 
+	// Обработка сообщения
 	void recv(lite_msg_t* msg) {
 		msg_t* d = lite_msg_data<msg_t>(msg);
 		assert(d != NULL);
-		if(d->num != next_write) {
-			// Пришло не по порядку, копия в кэш
-			assert(d->num < WIDTH * HEIGHT);
-			cache[d->num] = lite_msg_copy(msg);
-		} else {
-			// По порядку пришло, сразу в файл
-			d->result.print(out);
-			next_write++;
-			// Запись из кэша сколько есть
-			for (; next_write < WIDTH * HEIGHT && cache[next_write] != NULL; next_write++) {
-				d = lite_msg_data<msg_t>(cache[next_write]);
-				assert(d != NULL);
-				d->result.print(out);
-				lite_msg_erase(cache[next_write]); // Явное удаление т.к. была сделана копия
-			}
-		}
+		d->result.print(out);
 	}
 };
 
@@ -219,12 +220,13 @@ class alignas(64) worker_t : public lite_worker_t {
 	Vector a = !(Vector(0, 0, 1) ^ g) * .002;
 	Vector b = !(g ^ a) * .002;
 	Vector c = (a + b) * -256 + g;
-	lite_actor_t* writer; // Актор писатель
+	lite_actor_t* order; // Упорядочиватель
 
 public:
 	worker_t() {
-		writer = lite_actor_get("writer"); // Получение писателя по имени
-		assert(writer != NULL);
+		order = lite_actor_get("order"); // Получение упорядочивателя по имени
+		assert(order != NULL);
+		type_add(lite_msg_type<msg_t>()); // Разрешение принимать сообщение типа msg_t
 	}
 
 	// Расчет одного пикселя
@@ -239,8 +241,9 @@ public:
 	// Прием сообщения
 	void recv(lite_msg_t* msg) override {
 		msg_t* d = lite_msg_data<msg_t>(msg); // Указатель на содержимое
+		assert(d != NULL);
 		calc(d->x, d->y, d->result); // Расчет
-		lite_thread_run(msg, writer); // Отправка
+		lite_thread_run(msg, order); // Отправка
 	}
 
 };
@@ -248,23 +251,24 @@ public:
 // Запуск расчета
 void actor_start(int threads) {
 	// Создание акторов
+	// Писатель
 	lite_actor_t* writer = lite_actor_create<writer_t>("writer");
-	lite_actor_t* worker = lite_actor_create<worker_t>();
-	// Глубина распараллеливания считателя
-	lite_actor_parallel(threads, worker);
-	// Общее ограничение CPU
-	lite_resource_t* res = lite_resource_create("CPU", threads);
-	writer->resource_set(res);
-	worker->resource_set(res);
+	// Упорядочиватель (из lite_thread_util.h)
+	lite_order_create<msg_t>("order", writer);
+	// Считатель 
+	lite_actor_t* worker = lite_actor_create<worker_t>("worker");	
+	lite_actor_parallel(threads, worker); // Глубина распараллеливания
+	// Ограничение количества потоков
+	lite_thread_max(threads);
 	// Создание сообщений
-	int idx = 0; // номер сообщения
+	size_t idx = 0; // номер сообщения
 	for (int y = HEIGHT; y--;) {
 		for (int x = WIDTH; x--;) {
 			// Создание сообщения
 			lite_msg_t* msg = lite_msg_create<msg_t>();
 			// Заполнение
 			msg_t* d = lite_msg_data<msg_t>(msg);
-			d->num = idx++;
+			d->idx = idx++;
 			d->x = x;
 			d->y = y;
 			// Отправка
@@ -272,7 +276,7 @@ void actor_start(int threads) {
 		}
 	}
 
-	lite_thread_end(); // Ожидание окончания
+	lite_thread_end(); // Ожидание окончания расчета
 }
 
 int main(int argc, char **argv) {
