@@ -85,7 +85,6 @@ class alignas(64) worker_t : public lite_worker_t {
 		parallel++;
 		if(parallel != 1) {
 			lite_error("parralel %d", (int)parallel);
-			//stop_all = true;
 			return;
 		}
 		data_t* d = lite_msg_data<data_t>(msg); // Указатель на содержимое сообщения
