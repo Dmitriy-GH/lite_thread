@@ -262,6 +262,8 @@ lite_thread_end()
 //----------------------------------------------------------------------------------
 //------ СЧЕТЧИКИ СТАТИСТИКИ -------------------------------------------------------
 //----------------------------------------------------------------------------------
+static int64_t lite_time_now();
+
 class lite_thread_stat_t {
 	// Глобальные счетчики
 	static lite_thread_stat_t& si() noexcept {
@@ -285,7 +287,7 @@ public:
 	size_t stat_cache_full;			// Попытка записи в полный кэш
 	size_t stat_res_lock;			// Количество блокировок ресурсов
 	size_t stat_queue_max;			// Максимальная глубина очереди
-	size_t stat_msg_run;			// Обработано сообщений
+	size_t stat_msg_send;			// Обработано сообщений
 
 	// Счетчики потока
 	static lite_thread_stat_t& ti() noexcept {
@@ -295,6 +297,7 @@ public:
 
 	lite_thread_stat_t() {
 		init();
+		lite_time_now(); // Запуск отсчета времени
 	}
 
 	~lite_thread_stat_t() {
@@ -325,7 +328,7 @@ public:
 		si().stat_res_lock += stat_res_lock;
 		si().stat_actor_not_run += stat_actor_not_run;
 		if(si().stat_queue_max < stat_queue_max) si().stat_queue_max = stat_queue_max;
-		si().stat_msg_run += stat_msg_run;
+		si().stat_msg_send += stat_msg_send;
 		init();
 	}
 
@@ -348,7 +351,9 @@ public:
 		#ifdef LT_STAT_QUEUE
 		printf("queue_max      %llu\n", (uint64_t)si().stat_queue_max);
 		#endif
-		printf("msg_run        %llu\n", (uint64_t)si().stat_msg_run);
+		printf("msg_send       %llu\n", (uint64_t)si().stat_msg_send);
+		size_t time_ms = lite_time_now();
+		printf("msg_send/sec   %llu\n", (uint64_t)si().stat_msg_send * 1000 / (time_ms > 0 ? time_ms : 1)); // Сообщений в секунду
 		printf("\n");
 		if (si().stat_msg_create != si().stat_msg_erase) printf("!!! ERROR: lost %lld messages\n\n", (int64_t)si().stat_msg_create - si().stat_msg_erase); // Утечка памяти
 	}
@@ -839,7 +844,7 @@ protected:
 				la_func.func(msg, la_func.env); // Запуск
 				if (msg == ti().msg_del) lite_msg_t::erase(msg);
 				#ifdef LT_STAT
-				lite_thread_stat_t::ti().stat_msg_run++;
+				lite_thread_stat_t::ti().stat_msg_send++;
 				#endif
 			}
 			in_cache = false;

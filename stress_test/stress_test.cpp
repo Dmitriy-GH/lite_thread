@@ -1,5 +1,5 @@
 ﻿/* Тест работоспособности.
-При успешном завершении выдает в конце "... test OK ..."
+При успешном завершении выдает в конце "Test OK. worked: ... msg (min ... max ...)"
 
 Создается ACTOR_COUNT акторов обработчиков для каждого сообщения.
 Запускается MSG_COUNT сообщений (от количества сообщений зависит сколько максимум потоков потребуется)
@@ -278,7 +278,7 @@ int main()
 	}else if (msg_total != msg_count * STEP_COUNT) {
 		printf("ERROR: total %d need %d\n", (int)msg_total, msg_count * STEP_COUNT);
 	} else {
-		printf("%5lld: test OK worked: %d msg (min %d max %d) transfer: %d msg/sec.  MSG_COUNT: %d\n", lite_time_now(), (int)msg_count, (int)msg_count_min, (int)msg_count_max, (int)msg_total / TEST_TIME, MSG_COUNT);
+		printf("Test OK. worked: %d msg (min %d max %d)\n", (int)msg_count, (int)msg_count_min, (int)msg_count_max);
 	}
 	printf("compile %s %s with %s\n", __DATE__, __TIME__, LOCK_TYPE_LT);
 
