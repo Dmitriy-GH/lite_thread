@@ -1221,20 +1221,20 @@ public:
 		lite_worker_t* w = (lite_worker_t*)new T;
 		lite_lock_t lck(si().mtx_list); // Блокировка
 		si().la_list.push_back(w);
-		lite_actor_t* la = (lite_actor_t*)w->handle();
+		lite_actor_t* la = w->handle();
 		lite_actor_t::name_set(la, name);
 		return la;
 	}
 	
 	// Создание безымянного объекта
-	template <typename T>
-	static lite_actor_t* create() {
-		static std::atomic<size_t> cnt = 0;
-		std::string name = typeid(T).name();
-		name += "#";
-		name += std::to_string(cnt++);
-		return create<T>(name);
-	}
+	//template <typename T>
+	//static lite_actor_t* create() {
+	//	static std::atomic<size_t> cnt = 0;
+	//	std::string name = typeid(T).name();
+	//	name += "#";
+	//	name += std::to_string(cnt++);
+	//	return create<T>(name);
+	//}
 
 
 friend lite_thread_t;
@@ -1560,7 +1560,6 @@ static void lite_log(const char* data, ...) noexcept {
 	size += vsprintf_s(p, LITE_LOG_BUF_SIZE - size, data, ap);
 	p += size;
 #else
-	struct tm * timeinfo = localtime(&rawtime);
 	size += snprintf(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d ", timeinfo->tm_mday, timeinfo->tm_mon, timeinfo->tm_year % 100, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
 	p += size;
 	size += vsnprintf(p, LITE_LOG_BUF_SIZE - size, data, ap);
@@ -1682,7 +1681,11 @@ static lite_actor_t* lite_actor_get(const std::string& name) noexcept {
 // Создание актора из объекта унаследованного от lite_worker_t
 template <typename T>
 static lite_actor_t* lite_actor_create() noexcept {
-	return lite_worker_t::create<T>();
+	static std::atomic<size_t> cnt = 0;
+	std::string name = typeid(T).name();
+	name += "#";
+	name += std::to_string(cnt++);
+	return lite_worker_t::create<T>(name);
 }
 
 // Создание именованного актора из объекта унаследованного от lite_worker_t
