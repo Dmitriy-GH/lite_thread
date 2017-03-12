@@ -1552,6 +1552,8 @@ static void lite_log(const char* data, ...) noexcept {
 	size += vsprintf_s(p, LITE_LOG_BUF_SIZE - size, data, ap);
 	p += size;
 #else
+	struct tm * timeinfo;
+	localtime(&rawtime);
 	size += snprintf(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d ", timeinfo->tm_mday, timeinfo->tm_mon, timeinfo->tm_year % 100, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
 	p += size;
 	size += vsnprintf(p, LITE_LOG_BUF_SIZE - size, data, ap);
