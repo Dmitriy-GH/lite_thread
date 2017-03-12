@@ -644,12 +644,10 @@ public:
 //------ РЕСУРС --------------------------------------------------------------------
 //----------------------------------------------------------------------------------
 class alignas(64) lite_resource_t {
-	std::atomic<int> res_free = 32; // Свободное количество
-	int res_max = 32; // Максимум
+	std::atomic<int> res_free; // Свободное количество
+	int res_max; // Максимум
 	std::string name; // Название ресурса
-	#ifdef LT_STAT
-	size_t cnt_lock;
-	#endif
+
 public:
 	lite_actor_cache_t la_cache;
 
@@ -659,22 +657,16 @@ public:
 	}
 
 	lite_resource_t(int max) : res_free(max), res_max(max) {
-		#ifdef LT_STAT
-		cnt_lock = 0;
-		#endif
 	}
 	
 	~lite_resource_t() noexcept {
 		assert(res_free == res_max);
-		#ifdef LT_STAT
-		lite_thread_stat_t::ti().stat_res_lock += cnt_lock;
-		#endif
 	}
 
 	// Захват ресурса, возвращает true при успехе
 	bool lock() noexcept {
 		#ifdef LT_STAT
-		cnt_lock++;
+		lite_thread_stat_t::ti().stat_res_lock++;
 		#endif
 		if(res_free-- <= 0) {
 			res_free++;
@@ -1263,7 +1255,7 @@ class alignas(64) lite_thread_t {
 
 	// Общие данные всех потоков
 	struct static_info_t {
-		alignas(64) std::atomic<lite_thread_t*> worker_free = { 0 }; // Указатель на свободный поток
+		alignas(64) std::atomic<lite_thread_t*> worker_free = {0}; // Указатель на свободный поток
 		std::vector<lite_thread_t*> worker_list;	// Массив описателей потоков
 		std::atomic<size_t> thread_count;			// Количество запущеных потоков
 		lite_mutex_t mtx;							// Блокировка доступа к массиву потоков
