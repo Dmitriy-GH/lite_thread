@@ -454,25 +454,6 @@ public:
 		free(p);
 #endif
 	}
-
-	//void *operator new(size_t size) {
-	//	void* p = malloc(size + sizeof(void*) + 0x40);
-	//	if (p == NULL) {
-	//		assert(p != NULL);
-	//		throw std::bad_alloc();
-	//	}
-	//	void* p2 = (void*)((((size_t)(((char*)p) + sizeof(void*) - 1)) | 0x3F) + 1); // Выравнивание кратно 0x40
-	//	void** pv = ((void**)p2) - 1;
-	//	*pv = p; // Сохранение адреса выделенного блока перед выровненным блоком
-	//	printf("alloc %p align %p\n", *pv, p2);
-	//	return p2;
-	//}
-
-	//void operator delete(void *p) {
-	//	void** pv = ((void**)p) - 1;
-	//	//printf("free %p align %p\n", *pv, p);
-	//	free(*pv);
-	//}
 };
 
 
