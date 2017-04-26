@@ -433,11 +433,12 @@ static int64_t lite_time_now() {
 class lite_align64_t {
 public:
 	void *operator new(size_t size) {
-//#ifdef WIN32
-//		void* p = _aligned_malloc(size, 0x40);
-//#else
-		void* p = _mm_malloc(size, 0x40);
-//#endif
+#ifdef WIN32
+		void* p = _aligned_malloc(size, 0x40);
+#else
+		void* p;
+		if(posix_memalign(&p, 0x40, size)) p = NULL;
+#endif
 		if (p == NULL) {
 			assert(p != NULL);
 			throw std::bad_alloc();
@@ -447,11 +448,11 @@ public:
 	}
 
 	void operator delete(void *p) {
-//#ifndef WIN32
-//		_aligned_free(p);
-//#else
-		_mm_free(p);
-//#endif
+#ifdef WIN32
+		_aligned_free(p);
+#else
+		free(p);
+#endif
 	}
 
 	//void *operator new(size_t size) {
