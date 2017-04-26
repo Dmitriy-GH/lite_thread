@@ -183,7 +183,7 @@ void original() {
 
 //----------------------------------------------------------------------
 //Вариант с акторами
-struct msg_t {
+struct msg_t : public lite_msg_t {
 	size_t idx;
 	int x;
 	int y;
@@ -191,7 +191,7 @@ struct msg_t {
 };
 
 // Писатель (однопоточный)
-class alignas(64) writer_t : public lite_worker_t {
+class writer_t : public lite_actor_t {
 	FILE *out;
 public:
 	writer_t() {
@@ -206,16 +206,16 @@ public:
 	}
 
 	// Обработка сообщения
-	void recv(lite_msg_t* msg) {
-		msg_t* d = lite_msg_data<msg_t>(msg);
-		assert(d != NULL);
-		d->result.print(out);
+	void recv(lite_msg_t* msg) override {
+		msg_t* m = static_cast<msg_t*>(msg);
+		assert(m != NULL);
+		m->result.print(out);
 	}
 };
 
 
 // Считатель (потокобезопасный)
-class alignas(64) worker_t : public lite_worker_t {
+class worker_t : public lite_actor_t {
 	Vector g = !Vector(-6, -16, 0);
 	Vector a = !(Vector(0, 0, 1) ^ g) * .002;
 	Vector b = !(g ^ a) * .002;
@@ -240,10 +240,10 @@ public:
 
 	// Прием сообщения
 	void recv(lite_msg_t* msg) override {
-		msg_t* d = lite_msg_data<msg_t>(msg); // Указатель на содержимое
-		assert(d != NULL);
-		calc(d->x, d->y, d->result); // Расчет
-		lite_thread_run(msg, order); // Отправка
+		msg_t* m = static_cast<msg_t*>(msg); // Указатель на содержимое
+		assert(m != NULL);
+		calc(m->x, m->y, m->result); // Расчет
+		order->run(msg); // Отправка
 	}
 
 };
@@ -252,27 +252,33 @@ public:
 void actor_start(int threads) {
 	// Создание акторов
 	// Писатель
-	lite_actor_t* writer = lite_actor_create<writer_t>("writer");
+	writer_t* writer = new writer_t;
+	writer->name_set("writer");
+
 	// Упорядочиватель (из lite_thread_util.h)
-	lite_order_create<msg_t>("order", writer);
+	lite_order_t<msg_t>* order = new lite_order_t<msg_t>("writer");
+	order->name_set("order");
+
 	// Считатель 
-	lite_actor_t* worker = lite_actor_create<worker_t>("worker");	
-	lite_actor_parallel(threads, worker); // Глубина распараллеливания
+	worker_t* worker = new worker_t;
+	worker->name_set("worker");
+	worker->parallel_set(threads);
+
 	// Ограничение количества потоков
 	lite_thread_max(threads);
+
 	// Создание сообщений
 	size_t idx = 0; // номер сообщения
 	for (int y = HEIGHT; y--;) {
 		for (int x = WIDTH; x--;) {
 			// Создание сообщения
-			lite_msg_t* msg = lite_msg_create<msg_t>();
+			msg_t* msg = new msg_t;
 			// Заполнение
-			msg_t* d = lite_msg_data<msg_t>(msg);
-			d->idx = idx++;
-			d->x = x;
-			d->y = y;
+			msg->idx = idx++;
+			msg->x = x;
+			msg->y = y;
 			// Отправка
-			lite_thread_run(msg, worker);
+			worker->run(msg);
 		}
 	}
 

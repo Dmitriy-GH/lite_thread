@@ -51,8 +51,8 @@ std::atomic<bool> stop_all = { 0 }; // Флаг завершения работ�
 
 //---------------------------------------------------------------------
 // Содержимое сообщения
-struct data_t {
-	lite_actor_t* i_am;
+class msg_t : public lite_msg_t {
+public:
 	size_t worker_num;		// Номер обработчика сообщения
 	size_t rand;			// Для генерации следующего шага
 	int count_all;		// Количество пройденных циклов
@@ -62,98 +62,99 @@ struct data_t {
 };
 
 //---------------------------------------------------------------------
-// Обработчик ошибок
-static void error_set(lite_msg_t* msg, void* env) {
-	msg->data[msg->size() - 1] = 0;
-	lite_log(msg->data);
-	stop_all = true;
-}
-
+// Обработчик ошибок и вывод лога
+class log_t : public lite_actor_t {
+	void recv(lite_msg_t* msg) override {
+		lite_msg_log_t* m = dynamic_cast<lite_msg_log_t*>(msg);
+		assert(m != NULL);
+		printf("%s\n", m->data.c_str());
+		if(m->err_num != 0) {
+			stop_all = true;
+		}
+	}
+};
 
 //---------------------------------------------------------------------
 
-class alignas(64) worker_t : public lite_worker_t {
+class worker_t : public lite_actor_t {
 	static std::atomic<int> worker_end; // Счетчик завершивших работу
 
 	int count = 0; // Количество вызовов
 	std::atomic<int> parallel = {0}; // Количество парралельных запусков
-	// Указатели на акторы начала и конца обработки
+	// Указатель на актор конца обработки
 	lite_actor_t* finish;
 
 	// Обработка сообщения
-	void work(lite_msg_t* msg) {
+	void recv(lite_msg_t* msg) override {
 		parallel++;
 		if(parallel != 1) {
-			lite_error("parralel %d", (int)parallel);
+			lite_log(LITE_ERROR_USER, "parralel %d", (int)parallel);
 			return;
 		}
-		data_t* d = lite_msg_data<data_t>(msg); // Указатель на содержимое сообщения
-		if(d == NULL) { // Неверный тип сообщения
-			lite_error("wrong msg type");
+		msg_t* m = static_cast<msg_t*>(msg);
+
+		if(m == NULL) { // Неверный тип сообщения
+			lite_log(LITE_ERROR_USER, "wrong msg type");
 			return;
 		}
-		if(d->worker_num < 0 || d->worker_num >= ACTOR_COUNT) { // Индекс за пределами массива
-			lite_error("worker_num = %d", (int)d->worker_num);
+		if(m->worker_num < 0 || m->worker_num >= ACTOR_COUNT) { // Индекс за пределами массива
+			lite_log(LITE_ERROR_USER, "worker_num = %d", (int)m->worker_num);
 			return;
 		}
-		if(d->map[d->worker_num] != handle()) { // Сообщение пришло не тому обработчику
-			lite_error("wrong worker");
+		if(m->map[m->worker_num] != this) { // Сообщение пришло не тому обработчику
+			lite_log(LITE_ERROR_USER, "wrong worker");
 			return;
 		}
-		if (d->mark[d->worker_num]) { // Сообщение уже обработано этим обработчиком
-			lite_error("msg already worked");
+		if (m->mark[m->worker_num]) { // Сообщение уже обработано этим обработчиком
+			lite_log(LITE_ERROR_USER, "msg already worked");
 			return;
 		}
 		// Отметка что актор пройден
-		d->mark[d->worker_num] = true;
-		d->step_count++;
-		if(d->step_count >= STEP_COUNT) { 
+		m->mark[m->worker_num] = true;
+		m->step_count++;
+		if(m->step_count >= STEP_COUNT) { 
 			// Пройдено нужное количество шагов. Отправка на проверку
-			lite_thread_run(msg, finish);
+			finish->run(msg);
 		} else {
-
 			// Выбор следующего
 			for(size_t i = 0; i < 5; i++) {
-				d->rand = d->rand * 1023 + 65537;
-				d->worker_num = d->rand % ACTOR_COUNT;
-				if (!d->mark[d->worker_num]) break; // актор d->worker_num не пройден
+				m->rand = m->rand * 1023 + 65537;
+				m->worker_num = m->rand % ACTOR_COUNT;
+				if (!m->mark[m->worker_num]) break; // актор m->worker_num не пройден
 			}
-			if(d->mark[d->worker_num]) { // актор d->worker_num пройден
+			if(m->mark[m->worker_num]) { // актор m->worker_num пройден
 				// Поиск следующего непройденного
-				for(size_t i = d->worker_num; i < ACTOR_COUNT; i++) {
-					if(!d->mark[i]) { // Актор i не пройден
-						d->worker_num = i;
+				for(size_t i = m->worker_num; i < ACTOR_COUNT; i++) {
+					if(!m->mark[i]) { // Актор i не пройден
+						m->worker_num = i;
 						break;
 					}
 				}
 			}
-			if (d->mark[d->worker_num]) { // актор d->worker_num пройден
+			if (m->mark[m->worker_num]) { // актор m->worker_num пройден
 				// Поиск следующего непройденного
-				for (size_t i = 0; i < d->worker_num; i++) {
-					if (!d->mark[i]) { // Актор i не пройден
-						d->worker_num = i;
+				for (size_t i = 0; i < m->worker_num; i++) {
+					if (!m->mark[i]) { // Актор i не пройден
+						m->worker_num = i;
 						break;
 					}
 				}
 			}
 
 			// Отправка сообщения следующему
-			lite_thread_run(msg, d->map[d->worker_num]); 
+			m->map[m->worker_num]->run(msg);
 		}
 		count++;
 		parallel--;
-	}
-
-	void recv(lite_msg_t* msg) override {
-			work(msg);
 	}
 
 public:
 	// Конструктор
 	worker_t() {
 		finish = lite_actor_get("finish");
+		assert(finish != NULL);
 		count = 0;
-		//type_add(lite_msg_type<data_t>());
+		type_add(lite_msg_type<msg_t>());
 	}
 
 	// Завершение работы актора
@@ -177,82 +178,87 @@ std::atomic<int> worker_t::worker_end = { 0 };  // Счетчик заверши
 
 //---------------------------------------------------------------------
 // Подготовка сообщения и отправка на обработку
-void start_func(lite_msg_t* msg, void* env) {
-	data_t* d = lite_msg_data<data_t>(msg);  // Указатель на содержимое сообщения
-	if(d == NULL) {
-		lite_error("start: wrong msg type");
-		return;
+class start_t : public lite_actor_t {
+	void recv(lite_msg_t* msg) override {
+		msg_t* m = static_cast<msg_t*>(msg);
+		if(m == NULL) {
+			lite_log(LITE_ERROR_USER, "start: wrong msg type");
+			return;
+		}
+		// Очистка отметок выполнения
+		m->count_all++;
+		m->rand = m->rand * 1023 + 65537;
+		m->worker_num = m->rand % ACTOR_COUNT;
+		m->step_count = 0;
+		memset(m->mark, 0, sizeof(m->mark));
+		// Отправка дальше
+		m->map[m->worker_num]->run(msg);
 	}
-	// Очистка отметок выполнения
-	d->count_all++;
-	d->rand = d->rand * 1023 + 65537;
-	d->worker_num = d->rand % ACTOR_COUNT;
-	d->step_count = 0;
-	memset(d->mark, 0, sizeof(d->mark));
-	// Отправка дальше
-	lite_thread_run(msg, d->map[d->worker_num]);
-}
-
+};
 
 //---------------------------------------------------------------------
 // Проверка заполнения сообщения
-void finish_func(lite_msg_t* msg, void* env) {
-	data_t* d = lite_msg_data<data_t>(msg); // Указатель на содержимое сообщения
-	if (d == NULL) {
-		lite_error("finish: wrong msg type");
-		return;
-	}
-	// Проверка прохождения всех обработчиков
-	size_t count = 0;
-	for(size_t i = 0; i < ACTOR_COUNT; i++) {
-		if (d->mark[i]) count++;
-	}
-	if(count != STEP_COUNT) {
-		lite_error("skipped %d actors", (int)(ACTOR_COUNT - count));
-		return;
-	}
+class finish_t : public lite_actor_t {
+	void recv(lite_msg_t* msg) override {
+		msg_t* m = static_cast<msg_t*>(msg);
+		if (m == NULL) {
+			lite_log(LITE_ERROR_USER, "finish: wrong msg type");
+			return;
+		}
+		// Проверка прохождения всех обработчиков
+		size_t count = 0;
+		for(size_t i = 0; i < ACTOR_COUNT; i++) {
+			if (m->mark[i]) count++;
+		}
+		if(count != STEP_COUNT) {
+			lite_log(LITE_ERROR_USER, "skipped %d actors", (int)(ACTOR_COUNT - count));
+			return;
+		}
 
-	msg_count++;
+		msg_count++;
 
-	int64_t time = lite_time_now();
-	if(stop_all || time > TEST_TIME * 1000) {
-		// Время теста истекло
-		msg_finished++;
-		if (msg_count_max < d->count_all) msg_count_max = d->count_all;
-		if (msg_count_min > d->count_all) msg_count_min = d->count_all;
-		return;
-	} else if(time > time_alert) {
-		// Вывод текущего состояния раз 0.5 сек
-		time_alert += 500;
-		lite_log("%5lld: worked %d msg", lite_time_now(), (int)msg_count);
+		int64_t time = lite_time_now();
+		if(stop_all || time > TEST_TIME * 1000) {
+			// Время теста истекло
+			msg_finished++;
+			if (msg_count_max < m->count_all) msg_count_max = m->count_all;
+			if (msg_count_min > m->count_all) msg_count_min = m->count_all;
+			return;
+		} else if(time > time_alert) {
+			// Вывод текущего состояния раз 0.5 сек
+			time_alert += 500;
+			lite_log(0, "%5lld: worked %d msg", lite_time_now(), (int)msg_count);
+		}
+		// Проверки пройдены, запуск следующего
+		static lite_actor_t* start = NULL;
+		if (start == NULL) start = lite_actor_get("start");
+		start->run(msg);
+		//lite_thread_run(msg, start);
 	}
-	// Проверки пройдены, запуск следующего
-	static lite_actor_t* start = NULL;
-	if (start == NULL) start = lite_actor_get("start");
-	lite_thread_run(msg, start);
-}
-
+};
 
 
 int main()
 {
-	lite_log("compile %s %s", __DATE__, __TIME__);
-	lite_log("START workers: %d  messages: %d  time: %d sec", ACTOR_COUNT, MSG_COUNT, TEST_TIME);
 	// Установка обработчика ошибок
-	lite_actor_t* error = lite_actor_get(error_set);
-	lite_actor_name(error, "error");
+	log_t* log = new log_t;
+	log->name_set("log");
+
+	lite_log(0, "compile %s %s", __DATE__, __TIME__);
+	lite_log(0, "START workers: %d  messages: %d  time: %d sec", ACTOR_COUNT, MSG_COUNT, TEST_TIME);
 
 	// Инициализация указателей
-	lite_actor_t* start = lite_actor_get(start_func);
-	lite_actor_parallel(5, start);
-	lite_actor_name(start, "start");
-	lite_actor_t* finish = lite_actor_get(finish_func);
-	lite_actor_parallel(5, finish);
-	lite_actor_name(finish, "finish");
+	start_t* start = new start_t;
+	start->name_set("start");
+	start->parallel_set(5);
+
+	finish_t* finish = new finish_t;
+	finish->name_set("finish");
+	finish->parallel_set(5);
 
 	lite_actor_t* worker_list[ACTOR_COUNT];
 	for(size_t i = 0; i < ACTOR_COUNT; i++) {
-		worker_list[i] = lite_actor_create<worker_t>();
+		worker_list[i] = new worker_t;
 	}
 
 	// Установка ограничения количества потоков
@@ -260,13 +266,12 @@ int main()
 
 	// Создание сообщений
 	for(size_t i = 0; i < MSG_COUNT; i++) {
-		lite_msg_t* msg;
-		msg = lite_msg_create<data_t>();
-		data_t* d = lite_msg_data<data_t>(msg);  // Указатель на содержимое сообщения
-		d->rand = i;
-		d->count_all = 0;
-		for(size_t j = 0; j < ACTOR_COUNT; j++) d->map[j] = worker_list[j];
-		lite_thread_run(msg, start);
+		msg_t* msg = new msg_t();
+		msg->rand = i;
+		msg->count_all = 0;
+		for (size_t j = 0; j < ACTOR_COUNT; j++) msg->map[j] = worker_list[j];
+
+		start->run(msg);
 	}
 	
 	lite_thread_end(); // Ожидание окончания расчета

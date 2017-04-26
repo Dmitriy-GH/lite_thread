@@ -233,12 +233,18 @@ lite_thread_end()
 
 */
 
-#define LT_VERSION "0.9.0" // Версия библиотеки
+#define LT_VERSION "0.9.1" // Версия библиотеки
 
 #ifndef LT_RESOURCE_DEFAULT
 #define LT_RESOURCE_DEFAULT 32 // Предел ресурса по умолчанию
 #endif
 
+#define LITE_ERROR_NOT_IMPLEMENTED	1  // Не прописан обработчик актора
+#define LITE_ERROR_RESOURCE			2  // Актор использует другой ресурс
+#define LITE_ERROR_ACTOR_DOUBLE		3  // Попытка присвоить имя уже существующего актора
+#define LITE_ERROR_ACTOR_NAME		4  // Попытка смены имени актора
+#define LITE_ERROR_MSG_TYPE			5  // Сообщение необрабатываемого типа
+#define LITE_ERROR_USER				16 // Пользовательские коды ошибок начиная с LITE_ERROR_USER
 #ifdef LT_DEBUG
 #ifdef NDEBUG
 #undef NDEBUG
@@ -279,6 +285,8 @@ public:
 	size_t stat_try_wake_up;		// Попыток разбудить поток
 	size_t stat_msg_create;			// Создано сообщений
 	size_t stat_msg_erase;			// Удалено сообщений
+	size_t stat_actor_create;		// Создано акторов
+	size_t stat_actor_erase;		// Удалено акторов
 	size_t stat_actor_get;			// Запросов lite_actor_t* по (func, env)
 	size_t stat_actor_find;			// Поиск очередного актора готового к работе
 	size_t stat_actor_not_run;		// Промахи обработки сообщения, уже обрабатывается другим потоком
@@ -320,6 +328,8 @@ public:
 		si().stat_try_wake_up += stat_try_wake_up;
 		si().stat_msg_create += stat_msg_create;
 		si().stat_msg_erase += stat_msg_erase;
+		si().stat_actor_create += stat_actor_create;
+		si().stat_actor_erase += stat_actor_erase;
 		si().stat_actor_get += stat_actor_get;
 		si().stat_actor_find += stat_actor_find;
 		si().stat_cache_found += stat_cache_found;
@@ -341,6 +351,7 @@ public:
 		printf("thread_wake_up %llu\n", (uint64_t)si().stat_thread_wake_up);
 		printf("try_wake_up    %llu\n", (uint64_t)si().stat_try_wake_up);
 		printf("msg_create     %llu\n", (uint64_t)si().stat_msg_create);
+		printf("actor_create   %llu\n", (uint64_t)si().stat_actor_create);
 		printf("actor_get      %llu\n", (uint64_t)si().stat_actor_get);
 		printf("actor_find     %llu\n", (uint64_t)si().stat_actor_find);
 		printf("actor_not_run  %llu\n", (uint64_t)si().stat_actor_not_run);
@@ -356,6 +367,7 @@ public:
 		printf("msg_send/sec   %llu\n", (uint64_t)si().stat_msg_send * 1000 / (time_ms > 0 ? time_ms : 1)); // Сообщений в секунду
 		printf("\n");
 		if (si().stat_msg_create != si().stat_msg_erase) printf("!!! ERROR: lost %lld messages (erase %lld)\n\n", (int64_t)si().stat_msg_create - si().stat_msg_erase, (int64_t)si().stat_msg_erase); // Утечка памяти
+		if (si().stat_actor_create != si().stat_actor_erase) printf("!!! ERROR: lost %lld actors (erase %lld)\n\n", (int64_t)si().stat_actor_create - si().stat_actor_erase, (int64_t)si().stat_actor_erase); // Утечка памяти
 	}
 };
 
@@ -364,6 +376,8 @@ public:
 //----------------------------------------------------------------------------------
 //------ БЛОКИРОВКИ ----------------------------------------------------------------
 //----------------------------------------------------------------------------------
+#pragma warning( push )
+//#pragma warning( disable : 4505 ) // unreferenced local function has been removed
 #if defined(_WIN32) || defined(_WIN64)
 #define LOCK_TYPE_LT "critical section"
 #include <windows.h>
@@ -371,7 +385,6 @@ class lite_mutex_t {
 	CRITICAL_SECTION cs;
 public:
 	lite_mutex_t() {
-		//InitializeCriticalSection(&cs);
 		InitializeCriticalSectionAndSpinCount(&cs, 1000);
 	}
 
@@ -413,24 +426,106 @@ static int64_t lite_time_now() {
 	return (int64_t)(time_span.count() * 1000);
 }
 
+//----------------------------------------------------------------------------------
+//-------- ВЫРАВНИВАНИЕ В ПАМЯТИ ---------------------------------------------------
+//----------------------------------------------------------------------------------
+// Выделение памяти с выравниванием под кэшлинию (кратно 0x40)
+class lite_align64_t {
+public:
+	void *operator new(size_t size) {
+//#ifdef WIN32
+//		void* p = _aligned_malloc(size, 0x40);
+//#else
+		void* p = _mm_malloc(size, 0x40);
+//#endif
+		if (p == NULL) {
+			assert(p != NULL);
+			throw std::bad_alloc();
+		}
+		//printf("alloc %p\n", p);
+		return p;
+	}
+
+	void operator delete(void *p) {
+//#ifndef WIN32
+//		_aligned_free(p);
+//#else
+		_mm_free(p);
+//#endif
+	}
+
+	//void *operator new(size_t size) {
+	//	void* p = malloc(size + sizeof(void*) + 0x40);
+	//	if (p == NULL) {
+	//		assert(p != NULL);
+	//		throw std::bad_alloc();
+	//	}
+	//	void* p2 = (void*)((((size_t)(((char*)p) + sizeof(void*) - 1)) | 0x3F) + 1); // Выравнивание кратно 0x40
+	//	void** pv = ((void**)p2) - 1;
+	//	*pv = p; // Сохранение адреса выделенного блока перед выровненным блоком
+	//	printf("alloc %p align %p\n", *pv, p2);
+	//	return p2;
+	//}
+
+	//void operator delete(void *p) {
+	//	void** pv = ((void**)p) - 1;
+	//	//printf("free %p align %p\n", *pv, p);
+	//	free(*pv);
+	//}
+};
+
+
+//----------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------
 class lite_actor_t;
 class lite_thread_t;
 class lite_msg_queue_t;
-static void lite_error(const char* data, ...) noexcept;
-static void lite_log(const char* data, ...) noexcept;
+
+static void lite_log(int err, const char* data, ...) noexcept;
+static size_t lite_thread_num() noexcept;
+static void lite_thread_wake_up() noexcept;
 //----------------------------------------------------------------------------------
 //-------- СООБЩЕНИE ---------------------------------------------------------------
 //----------------------------------------------------------------------------------
-#pragma warning( push )
-#pragma warning( disable : 4200 ) // MSVC не нравится data[]
-// Сообщение
-struct lite_msg_t {
-	size_t _type;		// Тип сообщения
-	size_t _size;		// Размер data, байт
+class lite_msg_t : public lite_align64_t {
+public:
+	size_t type = {0};		// Тип сообщения
+	//size_t _size;		// Размер data, байт
 
 	friend lite_msg_queue_t;
 protected:
-	lite_msg_t* next;	// Указатель на следующее сообщение в очереди
+	lite_msg_t* next = {0};	// Указатель на следующее сообщение в очереди
+
+public:
+
+	lite_msg_t() {}
+
+	lite_msg_t(const lite_msg_t& m) {
+		type = m.type;
+	}
+
+	virtual ~lite_msg_t(){};
+
+	void *operator new(size_t size) {
+		#ifdef LT_STAT
+		lite_thread_stat_t::ti().stat_msg_create++;
+		#endif
+		return lite_align64_t::operator new(size);
+	}
+
+	void operator delete(void *p) {
+		#ifdef LT_STAT
+		lite_thread_stat_t::ti().stat_msg_erase++;
+		#endif
+		lite_align64_t::operator delete(p);
+	}
+
+	// Установка типа сообщения по классу
+	template <typename T>
+	static void type_set(T* msg) {
+		if(msg->type == 0) msg->type = typeid(T).hash_code();
+	}
 
 private:
 	// static переменные глобальные ----------------------------------------------------
@@ -447,59 +542,6 @@ private:
 	}
 
 public:
-	char data[];		// Данные
-
-	lite_msg_t();		// Запрет создания объектов
-	lite_msg_t& operator=(const lite_msg_t& m); // Запрет копирования
-
-	// Выделение памяти под сообщение, в случае ошибки возвращает NULL
-	static lite_msg_t* create(size_t size, size_t type = 0) noexcept {
-		lite_msg_t* msg = (lite_msg_t*)malloc(size + sizeof(lite_msg_t));
-		assert(msg != NULL);
-		if (msg != NULL) {
-			msg->_size = size;
-			msg->_type = type;
-			msg->next = NULL;
-			if (size != 0) msg->data[0] = 0;
-		}
-		#ifdef LT_STAT
-		lite_thread_stat_t::ti().stat_msg_create++;
-		#endif		
-		return msg;
-	}
-
-	// Создание типизированного сообщения
-	template <typename T>
-	static lite_msg_t* create() noexcept {
-		return create(sizeof(T), typeid(T).hash_code());
-	}
-
-	// Удаление сообщения
-	static void erase(lite_msg_t* msg) noexcept {
-		if (msg != NULL) {
-			#ifdef LT_DEBUG
-			assert(msg->next == NULL);
-			assert((uint32_t)msg->_type != 0xDDDDDDDD); // Повторное удаление, у MSVC2015 в дебаге free() все переписывает на 0xDD
-			msg->_type = 0xDDDDDDDD;
-			//used_msg(-1);
-			#endif
-			free(msg);
-			#ifdef LT_STAT
-			lite_thread_stat_t::ti().stat_msg_erase++;
-			#endif		
-		}
-	}
-
-	// Указатель на данные
-	template <typename T>
-	static T* get(lite_msg_t* msg) noexcept {
-		if (msg != NULL && sizeof(T) == msg->size()) {
-			return (T*)msg->data;
-		} else {
-			return NULL;
-		}
-	}
-
 	// Вывод типа сообщения
 	template <typename T>
 	static size_t type_get() noexcept {
@@ -515,25 +557,16 @@ public:
 	// Тип сообщения строкой
 	const std::string type_descr() {
 		lite_lock_t lck(si().mtx); // Блокировка
-		type_name_idx_t::iterator it = si().tn_idx.find(_type);
+		type_name_idx_t::iterator it = si().tn_idx.find(type);
 		if (it == si().tn_idx.end()) {
-			return std::to_string(_type);
+			std::string t = "type#";
+			t += std::to_string(type);
+			return t;
 		} else {
 			return it->second;
 		}
 	}
-
-	// Тип сообщения
-	size_t type() noexcept {
-		return _type;
-	}
-
-	// Размер сообщения
-	size_t size() {
-		return _size;
-	}
 };
-#pragma warning( pop )
 
 //----------------------------------------------------------------------------------
 //-------- ОЧЕРЕДЬ СООБЩЕНИЙ -------------------------------------------------------
@@ -643,10 +676,15 @@ public:
 //----------------------------------------------------------------------------------
 //------ РЕСУРС --------------------------------------------------------------------
 //----------------------------------------------------------------------------------
-class alignas(64) lite_resource_t {
-	std::atomic<int> res_free; // Свободное количество
-	int res_max; // Максимум
-	std::string name; // Название ресурса
+class lite_resource_manage_t;
+
+class lite_resource_t : public lite_align64_t {
+	std::atomic<int> res_free;	// Свободное количество
+	int res_max;				// Максимум
+
+friend lite_resource_manage_t;
+private:
+	std::string name;			// Название ресурса
 
 public:
 	lite_actor_cache_t la_cache;
@@ -682,10 +720,11 @@ public:
 	}
 
 	// Количество свободных ресурсов
-	bool free() noexcept {
+	bool is_free() noexcept {
 		return res_free > 0;
 	}
 
+	// Установка максимума одновременно выполняющихся акторов
 	void max_set(int max) noexcept {
 		if (max <= 0) max = 1;
 		if (max == res_max) return;
@@ -698,7 +737,10 @@ public:
 	const std::string name_get() {
 		return name;
 	}
+};
 
+// Управление ресурсами
+class lite_resource_manage_t {
 	// static методы глобальные ----------------------------------------------------
 	typedef std::unordered_map<std::string, lite_resource_t*> lite_resource_list_t;
 
@@ -712,6 +754,7 @@ public:
 		return x;
 	}
 
+public:
 	// Создание нового ресурса. max емкость ресурса, при получении указателя на имеющийся можно не указывать
 	static lite_resource_t* get(const std::string& name, int max = 0) {
 		lite_lock_t lck(si().mtx);
@@ -742,63 +785,33 @@ public:
 //----------------------------------------------------------------------------------
 //------ ОБРАБОТЧИК (АКТОР) --------------------------------------------------------
 //----------------------------------------------------------------------------------
-// Функция актора
-typedef void(*lite_func_t)(lite_msg_t*, void* env);
-
-static size_t lite_thread_num() noexcept;
-
-// Обработчик сообщения (функция + окружение)
-class lite_actor_func_t {
-public:
-	lite_func_t func;
-	void* env;
-
-	lite_actor_func_t(lite_func_t func, void* env) : func(func), env(env) { }
-
-	lite_actor_func_t& operator=(const lite_actor_func_t& a) noexcept {
-		this->func = a.func;
-		this->env = a.env;
-	}
-};
-
-// Хэш функция и сравнение lite_actor_func_t
-namespace std {
-	template<> class hash<lite_actor_func_t> {
-	public:
-		size_t operator()(const lite_actor_func_t &x) const noexcept {
-			return (((((size_t)x.env) >> 2) << 16) ^ (((size_t)x.func) >> 4));
-		}
-	};
-
-	static bool operator==(const lite_actor_func_t& l, const lite_actor_func_t& r) noexcept {
-		return r.func == l.func && r.env == l.env;
-	}
-
-}
-
-// Актор (функция + очередь сообщений)
-class alignas(64) lite_actor_t {
+// Актор (обработчик + очередь сообщений)
+class lite_actor_t : public lite_align64_t {
 
 	lite_resource_t* resource;			// Ресурс, используемый актором
 	lite_msg_queue_t msg_queue;			// Очередь сообщений
-	lite_actor_func_t la_func;			// Функция с окружением
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
 	bool in_cache;						// Помещен в кэш планирования запуска
 	std::string name;					// Наименование актора
 
+	std::vector<size_t> type_list;		// Список обрабатываемых типов
+
 	friend lite_thread_t;
 protected:
-
 	//---------------------------------
 	// Конструктор
-	lite_actor_t(const lite_actor_func_t& la) : la_func(la), actor_free(1), thread_max(1), in_cache(false) {
-		resource = &si().res_default;
+	lite_actor_t() : actor_free(1), thread_max(1), in_cache(false) {
+		if(si().res_default == NULL) {
+			si().res_default = lite_resource_manage_t::get("CPU", LT_RESOURCE_DEFAULT);
+		}
+		resource = si().res_default;
+		list_add(this);
 	}
 
 	// Проверка готовности к запуску
 	bool is_ready() noexcept {
-		return (!msg_queue.empty() && actor_free > 0 && (resource == NULL || resource == ti().lr_now_used || resource->free()));
+		return (!msg_queue.empty() && actor_free > 0 && (resource == NULL || resource == ti().lr_now_used || resource->is_free()));
 	}
 
 	// Постановка сообщения в очередь
@@ -833,8 +846,8 @@ protected:
 				// Запуск функции
 				ti().msg_del = msg; // Пометка на удаление
 				ti().need_wake_up = false;
-				la_func.func(msg, la_func.env); // Запуск
-				if (msg == ti().msg_del) lite_msg_t::erase(msg);
+				recv(msg); // Обработка
+				if (msg == ti().msg_del) delete msg;
 				#ifdef LT_STAT
 				lite_thread_stat_t::ti().stat_msg_send++;
 				#endif
@@ -846,10 +859,101 @@ protected:
 	}
 
 public:
-	// Получение имени актора
-	const std::string& name_get() {
-		return name;
+	// Установка имени актора
+	void name_set(const std::string& name_) {
+		name_set(this, name_);
 	}
+
+	// Получение имени актора
+	const std::string name_get() {
+		if(!name.empty()) {
+			return name;
+		} else {
+			std::string n = "actor#";
+			n += std::to_string((size_t)this);
+			return n;
+		}
+	}
+
+
+	// Привязка к ресурсу
+	void resource_set(lite_resource_t* res) noexcept {
+		assert(res != NULL);
+		if (resource != si().res_default) {
+			lite_log(LITE_ERROR_RESOURCE, "Actor %s already used resource '%s'", name_get().c_str(), res->name_get().c_str());
+		}
+		else {
+			resource = res;
+		}
+	}
+
+	// Установка глубины распараллеливания
+	void parallel_set(int count) noexcept {
+		if (count <= 0) count = 1;
+		if (count == thread_max) return;
+
+		actor_free += count - thread_max.exchange(count);
+	}
+
+	// Проверка типа сообщения
+	bool check_type(lite_msg_t* msg) noexcept {
+		if (!type_list.empty()) {
+			// Проверка что тип сообщения в обрабатываемых
+			bool found = false;
+			for (auto& t : type_list) {
+				if (msg->type == t) {
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				lite_log(LITE_ERROR_MSG_TYPE, "'%s' recv '%s'", name_get().c_str(), msg->type_descr().c_str());
+				return false;
+			}
+		}
+		return true;
+	}
+
+	// Помещение в очередь для последующего запуска
+	template <typename T>
+	void run(T* msg) noexcept {
+		lite_msg_t::type_set(msg);
+		if(check_type(msg)) {
+			push(msg);
+			if (need_wake_up()) lite_thread_wake_up();
+		}
+	}
+
+	//	// Добавление обрабатываемого типа
+	void type_add(size_t type) noexcept {
+		bool found = false;
+		for (auto& t : type_list) {
+			if (type == t) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) type_list.push_back(type);
+	}
+
+	#ifdef LT_STAT
+	void *operator new(size_t size) {
+		lite_thread_stat_t::ti().stat_actor_create++;
+		return lite_align64_t::operator new(size);
+	}
+
+	void operator delete(void *p) {
+		lite_thread_stat_t::ti().stat_actor_erase++;
+		lite_align64_t::operator delete(p);
+	}
+	#endif
+	//-----------------------------------------------------------------------------------
+	// Обработчик сообщения, прописывать в дочернем классе
+	virtual void recv(lite_msg_t* msg) {
+		lite_log(LITE_ERROR_NOT_IMPLEMENTED, "method '%s' recv() is not implemented. Recv '%s'", typeid(this).name(), msg->type_descr().c_str());
+	}
+	
+	virtual ~lite_actor_t() {}
 
 private:
 	// static переменные уровня потока -------------------------------------------------
@@ -868,18 +972,15 @@ private:
 
 
 	// static переменные глобальные ----------------------------------------------------
-	typedef std::unordered_map<lite_actor_func_t, lite_actor_t*> lite_actor_idx_t;
 	typedef std::unordered_map<std::string, lite_actor_t*> lite_name_idx_t;
 	typedef std::vector<lite_actor_t*> lite_actor_list_t;
 
 	struct static_info_t {
-		lite_actor_idx_t la_idx;	// Индекс для поиска lite_actor_t* по (func, env)
 		lite_name_idx_t la_name_idx;// Индекс для поиска lite_actor_t* по имени
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
 		lite_actor_list_t la_list; // Список акторов
 		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
-		//lite_actor_cache_t la_cache;// Кэш акторов готовых к запуску
-		lite_resource_t res_default;// Ресурс по умолчанию
+		lite_resource_t* res_default = {0};// Ресурс по умолчанию
 	};
 
 	static static_info_t& si() noexcept {
@@ -889,7 +990,7 @@ private:
 
 	// static методы глобальные ----------------------------------------------------
 	// Сохранение в кэш указателя на актор ожидающий исполнения
-	void cache_push(lite_actor_t* la) noexcept {
+	static void cache_push(lite_actor_t* la) noexcept {
 		assert(la != NULL);
 		if (!la->is_ready() || la->in_cache) return;
 
@@ -902,7 +1003,7 @@ private:
 		// Запись в кэш ресурса
 		la->resource->la_cache.push(la);
 
-		if (!ti().need_wake_up) ti().need_wake_up = la->resource->free();
+		if (!ti().need_wake_up) ti().need_wake_up = la->resource->is_free();
 	}
 
 	// Получение из кэша указателя на актор ожидающий исполнения
@@ -923,7 +1024,7 @@ private:
 
 		if(ti().lr_now_used != NULL) {
 			// Проверка кэша используемого ресурса
-			while (la = ti().lr_now_used->la_cache.pop()) {
+			while ((la = ti().lr_now_used->la_cache.pop()) != NULL) {
 				if (la->is_ready()) {
 					return la;
 				}
@@ -1004,35 +1105,30 @@ private:
 		lite_lock_t lck(si().mtx_idx); // Блокировка
 		lite_lock_t lck2(si().mtx_list); // Блокировка
 
+		lite_actor_t* la_log = name_find("log");
+
 		for (auto& a : si().la_list) {
-			delete a;
+			if (a != la_log) {
+				delete a;
+			}
 		}
-		si().la_idx.clear();
-		si().la_name_idx.clear();
 		si().la_list.clear();
+
+		// Вывод сообщений отправленных из деструкторов
+		if (la_log != NULL) {
+			la_log->run_all();
+			resource_lock(NULL);
+			delete la_log;
+		}
+
+		si().la_name_idx.clear();
+		si().res_default = NULL;
 	}
 
-public: //-------------------------------------------------------------
-	// Указатель на объект связанный с актором
-	static lite_actor_t* get(lite_func_t func, void* env = NULL) noexcept {
-		#ifdef LT_STAT
-		lite_thread_stat_t::ti().stat_actor_get++;
-		#endif
-		lite_actor_func_t a(func, env);
-
-		lite_lock_t lck(si().mtx_idx); // Блокировка
-		lite_actor_idx_t::iterator it = si().la_idx.find(a); // Поиск по индексу
-		lite_actor_t* la;
-		if (it != si().la_idx.end()) {
-			la = it->second;
-		} else {
-			// Добавление
-			la = new lite_actor_t(a);
-			si().la_idx[a] = la;
-			lite_lock_t lck2(si().mtx_list); // Блокировка
-			si().la_list.push_back(la);
-		}
-		return la;
+	// Добавление в список акторов
+	static void list_add(lite_actor_t* la) noexcept {
+		lite_lock_t lck2(si().mtx_list); // Блокировка
+		si().la_list.push_back(la);
 	}
 
 	// Установка имени актора
@@ -1040,15 +1136,16 @@ public: //-------------------------------------------------------------
 		lite_lock_t lck(si().mtx_idx); // Блокировка
 		lite_name_idx_t::iterator it = si().la_name_idx.find(name); // Поиск по индексу
 		if (it != si().la_name_idx.end()) {
-			if(it->second != la) lite_error("Actor '%s' already exists", name.c_str());
+			if(it->second != la) lite_log(LITE_ERROR_ACTOR_DOUBLE, "Actor '%s' already exists", name.c_str());
 		} else if(!la->name.empty()) {
-			lite_error("Try set name '%s' to actor '%s'", name.c_str(), la->name.c_str());
+			lite_log(LITE_ERROR_ACTOR_NAME, "Try set name '%s' to actor '%s'", name.c_str(), la->name.c_str());
 		} else {
 			si().la_name_idx[name] = la;
 			la->name = name;
 		}
 	}
 
+public: //-------------------------------------------------------------
 	// Получание актора по имени
 	static lite_actor_t* name_find(const std::string& name) {
 		lite_lock_t lck(si().mtx_idx); // Блокировка
@@ -1060,153 +1157,30 @@ public: //-------------------------------------------------------------
 		return la;
 	}
 
-	// Установка глубины распараллеливания
-	static void parallel(int count, lite_actor_t* la) noexcept {
-		if (count <= 0) count = 1;
-		if (count == la->thread_max) return;
-
-		la->actor_free += count - la->thread_max.exchange(count);
-	}
-
 	// Копирование сообщения
-	static lite_msg_t* msg_copy(lite_msg_t* msg) noexcept {
+	template <typename T>
+	static T* msg_copy(T* msg) noexcept {
 		if (ti().msg_del == msg) {
 			ti().msg_del = NULL; // Снятие пометки на удаление
 			return msg;
 		} else {
-			lite_msg_t* msg2 = lite_msg_t::create(msg->size(), msg->type());
-			memcpy(msg2, msg, msg->size());
+			T* msg2 = new T(*msg);
 			return msg2;
-		}
-	}
-
-	// Установка сообщения об окончании работы
-	void resource_set(lite_resource_t* res) noexcept {
-		assert(res != NULL);
-		if(resource != &si().res_default) {
-			lite_error("Actor %s already used resource '%s'", name.c_str(), res->name_get().c_str());
-		} else {
-			resource = res;
 		}
 	}
 
 	// Установка максимума ресурсу по умолчанию
 	static void resource_max(int max) noexcept {
-		si().res_default.max_set(max);
+		si().res_default->max_set(max);
 	}
 
-};
-
-//----------------------------------------------------------------------------------
-//----- КЛАСС-ОБЕРТКА ДЛЯ АКТОРОВ --------------------------------------------------
-//----------------------------------------------------------------------------------
-class lite_worker_t {
-	std::vector<size_t> type_list;	// Список обрабатываемых типов
-	bool type_control = false;		// Задан список принимаетых типов
-	lite_actor_t* i_am;
-	// Прием входящего сообщения
-	static void recv(lite_msg_t* msg, void* env) noexcept {
-		lite_worker_t* w = (lite_worker_t*)env;
-		if(w->type_control) {
-			// Проверка что тип сообщения в обрабатываемых
-			bool found = false;
-			for(auto& t : w->type_list) {
-				if (msg->type() == t) {
-					found = true;
-					break;
-				}
-			}
-			if(!found) {
-				lite_error("%s recv msg type %s", w->handle()->name_get().c_str(), msg->type_descr().c_str());
-				return;
-			}
-		}
-		// Обработка сообщения дочерним классом
-		w->recv(msg);
-	}
-
-public:
-	lite_worker_t() {
-		i_am = lite_actor_t::get(recv, this);
-	}
-
-	// Указатель на актор данного объекта
-	lite_actor_t* handle() noexcept {
-		return i_am;
-	}
-
-	// Добавление обрабатываемого типа
-	void type_add(size_t type) noexcept {
-		type_control = true;
-		bool found = false;
-		for (auto& t : type_list) {
-			if (type == t) {
-				found = true;
-				break;
-			}
-		}
-		if (!found) type_list.push_back(type);
-	}
-
-	// Обработчик сообщения, прописывать в дочернем классе
-	virtual void recv(lite_msg_t* msg) {
-		lite_error("method %s work() is not implemented", typeid(this).name());
-	}
-
-	virtual ~lite_worker_t() {}
-
-private:
-	// static переменные глобальные ----------------------------------------------------
-	typedef std::vector<lite_worker_t*> lite_worker_list_t;
-
-	struct static_info_t {
-		lite_worker_list_t la_list; // Список оберток
-		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
-	};
-
-	static static_info_t& si() noexcept {
-		static static_info_t x;
-		return x;
-	}
-
-public: 
-	// static методы -------------------------------------------------------------
-	// Создание именованного объекта
-	template <typename T>
-	static lite_actor_t* create(const std::string& name) {
-		// Акторы log и error можно создавать только явно, т.к. они должны удаляться после всех, чтобы обработать записи из деструкторов
-		if(name == "log") {
-			lite_error("Actor 'log' can`t be created lite_worker_t::create()");
-			return NULL;
-		}
-		if (name == "error") {
-			lite_error("Actor 'error' can`t be created lite_worker_t::create()");
-			return NULL;
-		}
-
-		lite_worker_t* w = (lite_worker_t*)new T;
-		lite_lock_t lck(si().mtx_list); // Блокировка
-		si().la_list.push_back(w);
-		lite_actor_t* la = w->handle();
-		lite_actor_t::name_set(la, name);
-		return la;
-	}
-	
-friend lite_thread_t;
-protected:
-	// Удаление всех объектов
-	static void clear() {
-		lite_lock_t lck(si().mtx_list); // Блокировка
-		for (auto& w : si().la_list) delete w;
-		si().la_list.clear();
-	}
 };
 
 //----------------------------------------------------------------------------------
 //----- ПОТОКИ ---------------------------------------------------------------------
 //----------------------------------------------------------------------------------
 
-class alignas(64) lite_thread_t {
+class lite_thread_t : lite_align64_t {
 	size_t num;					// Номер потока
 	std::mutex mtx_sleep;		// Для засыпания
 	std::condition_variable cv;	// Для засыпания
@@ -1301,19 +1275,6 @@ class alignas(64) lite_thread_t {
 		return ret;
 	}
 
-	// Пробуждение свободного потока
-	static void wake_up() noexcept {
-		lite_thread_t* wf = find_free();
-		if(wf != NULL) {
-			wf->cv.notify_one();
-			#ifdef LT_STAT
-			lite_thread_stat_t::ti().stat_try_wake_up++;
-			#endif
-		} else {
-			create_thread();
-		}
-	}
-
 	// Обработка сообщений
 	static void work_msg(lite_actor_t* la = NULL) noexcept {
 		if (la == NULL) la = lite_actor_t::find_ready();
@@ -1327,7 +1288,7 @@ class alignas(64) lite_thread_t {
 	// Функция потока
 	static void thread_func(lite_thread_t* const lt) noexcept {
 		#ifdef LT_DEBUG
-		lite_log("thread#%d start", (int)lt->num);
+		lite_log(0, "thread#%d start", (int)lt->num);
 		#endif
 		this_num(lt->num);
 		// Пробуждение другого потока если ожидающих акторов больше одного
@@ -1350,7 +1311,7 @@ class alignas(64) lite_thread_t {
 			bool stop = false;
 			{
 				#ifdef LT_DEBUG
-				lite_log("thread#%d sleep", (int)lt->num);
+				lite_log(0, "thread#%d sleep", (int)lt->num);
 				#endif
 				if(thread_work() == 0) si().cv_end.notify_one(); // Если никто не работает, то разбудить ожидание завершения
 				lite_thread_t* wf = si().worker_free;
@@ -1362,11 +1323,11 @@ class alignas(64) lite_thread_t {
 				if(lt->cv.wait_for(lck, std::chrono::seconds(1)) == std::cv_status::timeout) {	// Проснулся по таймауту
 					stop = (lt->num == si().thread_count - 1);	// Остановка потока с наибольшим номером
 					#ifdef LT_DEBUG
-					lite_log("thread#%d wake up (total: %d, work: %d)", (int)lt->num, (int)si().thread_count, (int)thread_work());
+					lite_log(0, "thread#%d wake up (total: %d, work: %d)", (int)lt->num, (int)si().thread_count, (int)thread_work());
 					#endif
 				} else {
 					#ifdef LT_DEBUG
-					lite_log("thread#%d wake up", (int)lt->num);
+					lite_log(0, "thread#%d wake up", (int)lt->num);
 					#endif
 					#ifdef LT_STAT
 					lite_thread_stat_t::ti().stat_thread_wake_up++;
@@ -1391,16 +1352,23 @@ class alignas(64) lite_thread_t {
 		si().thread_count--;
 		si().cv_end.notify_one(); // пробуждение end()
 		#ifdef LT_DEBUG
-		lite_log("thread#%d stop", (int)lt->num);
+		lite_log(0, "thread#%d stop", (int)lt->num);
 		#endif
 
 	}
 
 public: //-------------------------------------
-	// Помещение в очередь для последующего запуска
-	static void run(lite_msg_t* msg, lite_actor_t* la) noexcept {
-		la->push(msg);
-		if (lite_actor_t::need_wake_up() || si().thread_count == 0) wake_up();
+		// Пробуждение свободного потока
+	static void wake_up() noexcept {
+		lite_thread_t* wf = find_free();
+		if (wf != NULL) {
+			wf->cv.notify_one();
+			#ifdef LT_STAT
+			lite_thread_stat_t::ti().stat_try_wake_up++;
+			#endif
+		} else {
+			create_thread();
+		}
 	}
 
 	// Завершение, ожидание всех потоков
@@ -1408,12 +1376,12 @@ public: //-------------------------------------
 		// Рассчет еще не начался
 		if(si().thread_count == 1 && thread_work() == 0) {
 			#ifdef LT_DEBUG
-			lite_log("--- wait start ---");
+			lite_log(0, "--- wait start ---");
 			#endif	
 			std::this_thread::sleep_for(std::chrono::milliseconds(100)); // для запуска потоков
 		}
 		#ifdef LT_DEBUG
-		lite_log("--- wait all ---");
+		lite_log(0, "--- wait all ---");
 		#endif	
 		// Ожидание завершения расчетов. 
 		while(thread_work() > 0) {
@@ -1421,7 +1389,7 @@ public: //-------------------------------------
 			si().cv_end.wait_for(lck, std::chrono::milliseconds(300));
 		}
 		#ifdef LT_DEBUG
-		lite_log("--- stop all ---");
+		lite_log(0, "--- stop all ---");
 		#endif	
 		// Остановка потоков
 		si().stop = true;
@@ -1457,14 +1425,10 @@ public: //-------------------------------------
 		si().worker_free = NULL;
 		// Дообработка необработанных сообщений. 
 		work_msg();
-		// Очистка памяти под акторы-объекты
-		lite_worker_t::clear();
-		// Дообработка сообщений из деструкторов объектов
-		work_msg();
-		// Очистка памяти под акторы
+		// Удаление акторов
 		lite_actor_t::clear();
 		// Очистка памяти под ресурсы
-		lite_resource_t::clear();
+		lite_resource_manage_t::clear();
 		#ifdef LT_STAT
 		lite_thread_stat_t::ti().print_stat();
 		#endif		
@@ -1491,35 +1455,56 @@ public: //-------------------------------------
 #define LITE_LOG_BUF_SIZE 1024
 #endif
 
+// Сообщение
+class lite_msg_log_t : public lite_msg_t {
+public:
+	lite_msg_log_t(int err, const char* str) : data(str), err_num(err) { }
+
+	std::string data;
+	int err_num;
+};
+
 // Вывод по умолчанию в консоль. При необходимости зарегистрировать свой актор "log"
-static void lite_log_write(lite_msg_t* msg, void* env) {
-	msg->data[msg->size() - 1] = 0;
-	printf("%s\n", msg->data + 9);
-}
+class lite_actor_log_t : public lite_actor_t {
+public:
+	void recv(lite_msg_t* msg) override { // Обработчик сообщения
+		lite_msg_log_t* m = dynamic_cast<lite_msg_log_t*>(msg);
+		assert(m != NULL);
+		printf("%s\n", m->data.c_str() + 9);
+	}
+};
 
 // Запись в лог
-static void lite_log(const char* data, ...) noexcept {
+static void lite_log(int err, const char* data, ...) noexcept {
 	va_list ap;
 	va_start(ap, data);
-	lite_msg_t* msg = lite_msg_t::create(LITE_LOG_BUF_SIZE);
+	char buf[LITE_LOG_BUF_SIZE];
 
 	time_t rawtime;
 	time(&rawtime);
 
 	size_t size = 0;
-	char* p = msg->data;
+	char* p = buf;
 
 #ifdef WIN32
 	struct tm timeinfo;
 	localtime_s(&timeinfo, &rawtime);
-	size += sprintf_s(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d ", timeinfo.tm_mday, timeinfo.tm_mon, timeinfo.tm_year % 100, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+	if(err > 0) {
+		size += sprintf_s(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d !!! ERROR %d: ", timeinfo.tm_mday, timeinfo.tm_mon, timeinfo.tm_year % 100, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, err);
+	} else {
+		size += sprintf_s(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d ", timeinfo.tm_mday, timeinfo.tm_mon, timeinfo.tm_year % 100, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+	}
 	p += size;
 	size += vsprintf_s(p, LITE_LOG_BUF_SIZE - size, data, ap);
 	p += size;
 #else
 	struct tm * timeinfo;
 	timeinfo = localtime(&rawtime);
-	size += snprintf(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d ", timeinfo->tm_mday, timeinfo->tm_mon, timeinfo->tm_year % 100, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+	if (err > 0) {
+		size += snprintf(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d !!! ERROR %d: ", timeinfo->tm_mday, timeinfo->tm_mon, timeinfo->tm_year % 100, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec, err);
+	} else {
+		size += snprintf(p, LITE_LOG_BUF_SIZE - size, "%02d.%02d.%02d %02d:%02d:%02d ", timeinfo->tm_mday, timeinfo->tm_mon, timeinfo->tm_year % 100, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+	}
 	p += size;
 	size += vsnprintf(p, LITE_LOG_BUF_SIZE - size, data, ap);
 	p += size;
@@ -1527,88 +1512,25 @@ static void lite_log(const char* data, ...) noexcept {
 	va_end(ap);
 	assert(size < LITE_LOG_BUF_SIZE);
 	*p = 0;
+	lite_msg_log_t* msg = new lite_msg_log_t(err, buf);
 	// Отправка на вывод
 	lite_actor_t* log = lite_actor_t::name_find("log");
 	if(log == NULL) { // Нет актора "log"
-		// Регистрация lite_log_write()
-		log = lite_actor_t::get(lite_log_write, NULL);
-		lite_actor_t::name_set(log, "log");
+		// Регистрация lite_actor_log_t()
+		log = new lite_actor_log_t();
+		log->name_set("log");
 	}
 	#ifdef LT_DEBUG_LOG
-	lite_log_write(msg, NULL);
-	lite_msg_t::erase(msg);
+	log->recv(msg);
+	delete msg;
 	#else
-	lite_thread_t::run(msg, log);
-	#endif
-}
-
-//----------------------------------------------------------------------------------
-//----- ЗАПИСЬ ОШИБКИ В ЛОГ --------------------------------------------------------
-//----------------------------------------------------------------------------------
-
-// Вывод по умолчанию в лог. При необходимости зарегистрировать свой актор "error"
-static void lite_error_write(lite_msg_t* msg, void* env) {
-	msg->data[msg->size() - 1] = 0;
-	lite_log(msg->data);
-}
-
-// Запись ошибки
-static void lite_error(const char* data, ...) noexcept {
-	va_list ap;
-	va_start(ap, data);
-	lite_msg_t* msg = lite_msg_t::create(LITE_LOG_BUF_SIZE);
-
-	size_t size = 0;
-	char* p = msg->data;
-
-	#ifdef WIN32
-	size += sprintf_s(p, LITE_LOG_BUF_SIZE - size, "!!! ERROR: ");
-	p += size;
-	size += vsprintf_s(p, LITE_LOG_BUF_SIZE - size, data, ap);
-	p += size;
-	#else
-	size += snprintf(p, LITE_LOG_BUF_SIZE - size, "!!! ERROR: ");
-	p += size;
-	size += vsnprintf(p, LITE_LOG_BUF_SIZE - size, data, ap);
-	p += size;
-	#endif
-	va_end(ap);
-	assert(size < LITE_LOG_BUF_SIZE);
-	*p = 0;
-	// Отправка на вывод
-	lite_actor_t* error = lite_actor_t::name_find("error");
-	if (error == NULL) { // Нет актора "error"
-		// Регистрация lite_log_write()
-		error = lite_actor_t::get(lite_error_write, NULL);
-		lite_actor_t::name_set(error, "error");
-	}
-	#ifdef LT_DEBUG_LOG
-	lite_error_write(msg, NULL);
-	lite_msg_t::erase(msg);
-	#else
-	lite_thread_t::run(msg, error);
+	log->run(msg);
 	#endif
 }
 
 //----------------------------------------------------------------------------------
 //----- ОБЕРТКИ --------------------------------------------------------------------
 //----------------------------------------------------------------------------------
-// Выделение памяти под сообщение, в случае ошибки возвращает NULL
-static lite_msg_t* lite_msg_create(size_t size, size_t type = 0) noexcept {
-	return lite_msg_t::create(size, type);
-}
-
-// Выделение памяти под типизированное сообщение, в случае ошибки возвращает NULL
-template <typename T>
-static lite_msg_t* lite_msg_create() noexcept {
-	return lite_msg_t::create<T>();
-}
-
-// Указатель на данные сообщения, NULL если тип не совпадает
-template <typename T>
-static T* lite_msg_data(lite_msg_t* msg) noexcept {
-	return lite_msg_t::get<T>(msg);
-}
 
 // Получение типа сообщения
 template <typename T>
@@ -1616,63 +1538,9 @@ static size_t lite_msg_type() {
 	return lite_msg_t::type_get<T>();
 }
 
-// Удаление сообщения
-static void lite_msg_erase(lite_msg_t* msg) noexcept {
-	lite_msg_t::erase(msg);
-}
-
-// Копирование сообщения
-static lite_msg_t* lite_msg_copy(lite_msg_t* msg) noexcept {
-	return lite_actor_t::msg_copy(msg);
-}
-
-// Получения указателя на актор по функции
-static lite_actor_t* lite_actor_get(lite_func_t func, void* env = NULL) noexcept {
-	return lite_actor_t::get(func, env);
-}
-
 // Получения указателя на актор по имени
 static lite_actor_t* lite_actor_get(const std::string& name) noexcept {
 	return lite_actor_t::name_find(name);
-}
-
-// Создание актора из объекта унаследованного от lite_worker_t
-template <typename T>
-static lite_actor_t* lite_actor_create() noexcept {
-	static std::atomic<size_t> cnt = {0};
-	std::string name = typeid(T).name();
-	name += "#";
-	name += std::to_string(cnt++);
-	return lite_worker_t::create<T>(name);
-}
-
-// Создание именованного актора из объекта унаследованного от lite_worker_t
-template <typename T>
-static lite_actor_t* lite_actor_create(const std::string& name) noexcept {
-	return lite_worker_t::create<T>(name);
-}
-
-// Установка имени актору
-static void lite_actor_name(lite_actor_t* la, const std::string& name) noexcept {
-	lite_actor_t::name_set(la, name);
-}
-
-// Установка глубины распараллеливания
-static void lite_actor_parallel(int max, lite_actor_t* la) noexcept {
-	lite_actor_t::parallel(max, la);
-}
-
-static void lite_actor_parallel(int max, lite_func_t func, void* env = NULL) noexcept {
-	lite_actor_t::parallel(max, lite_actor_t::get(func, env));
-}
-
-// Отправка на выполнение по указателю на актор
-static void lite_thread_run(lite_msg_t* msg, lite_actor_t* la) noexcept {
-	lite_thread_t::run(msg, la);
-}
-
-static void lite_thread_run(lite_msg_t* msg, lite_func_t func, void* env = NULL) noexcept {
-	lite_thread_t::run(msg, lite_actor_t::get(func, env));
 }
 
 // Завершение с ожиданием всех
@@ -1692,14 +1560,17 @@ static void lite_thread_max(int max) noexcept {
 
 // Создание ресурса
 static lite_resource_t* lite_resource_create(const std::string& name, int max) noexcept {
-	return lite_resource_t::get(name, max);
+	return lite_resource_manage_t::get(name, max);
 }
 
-// Привязка актора к ресурсу
-static void lite_resource_set(const std::string& name, lite_actor_t* la) noexcept {
-	la->resource_set(lite_resource_t::get(name));
+// Копирование сообщения
+template <typename T>
+static T* lite_msg_copy(T* msg) noexcept {
+	return lite_actor_t::msg_copy(msg);
 }
 
-static void lite_resource_set(const std::string& name, lite_func_t func, void* env = NULL) noexcept {
-	lite_actor_t::get(func, env)->resource_set(lite_resource_t::get(name));
+static void lite_thread_wake_up() noexcept {
+	lite_thread_t::wake_up();
 }
+
+#pragma warning( pop )
