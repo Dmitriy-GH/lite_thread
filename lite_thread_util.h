@@ -25,7 +25,7 @@
 */
 
 template <typename T>
-class lite_order_t : public lite_worker_t {
+class lite_order_t : public lite_actor_t {
 	typedef std::map<size_t, lite_msg_t*> cache_t;
 
 	cache_t cache;			// Кэш для пришедших в неправильном порядке
@@ -33,17 +33,22 @@ class lite_order_t : public lite_worker_t {
 	lite_actor_t* send_to;	// Адрес отправки упорядоченной последовательности
 
 public:
-	lite_order_t() : next(0), send_to(NULL) {
+	lite_order_t(const std::string next_actor) : next(0) {
+		send_to = lite_actor_get(next_actor);
+		if (send_to == NULL) { // Не задан адрес пересылки
+			lite_log(LITE_ERROR_USER, "Can`t find actor '%s'", next_actor.c_str());
+			assert(send_to == NULL);
+			return;
+		}
 		// Типы принимаемых сообщений
-		type_add(lite_msg_type<lite_actor_t*>());
 		type_add(lite_msg_type<T>());
 	}
 
 	~lite_order_t() {
 		if(cache.size() != 0) {
-			lite_error("%s have %d msg in cache", handle()->name_get().c_str(), cache.size());
+			lite_log(LITE_ERROR_USER, "%s have %d msg in cache", name_get().c_str(), cache.size());
 			for(auto& it : cache) {
-				lite_msg_erase(it.second); // Явное удаление, т.к. было копирование
+				delete it.second; // Явное удаление, т.к. было копирование
 			}
 			cache.clear();
 		}
@@ -51,26 +56,16 @@ public:
 
 	// Обработка сообщения
 	void recv(lite_msg_t* msg) override {
-		T* d = lite_msg_data<T>(msg);
-		if(d == NULL) {
-			// Получен адрес куда отправлять
-			lite_actor_t** a = lite_msg_data<lite_actor_t*>(msg);
-			assert(a != NULL);
-			send_to = *a;
-			return;
-		} else if(send_to == NULL) { // Не задан адрес пересылки
-			lite_error("Can`t set receiver for %s", handle()->name_get().c_str());
-			return;
-		}
+		T* m = static_cast<T*>(msg);
 
-		if(d->idx == next) {
+		if(m->idx == next) {
 			// Сообщение пришло по порядку
-			lite_thread_run(msg, send_to);
+			send_to->run(msg);
 			next++;
 			// Поиск в кэше и отправка 
 			cache_t::iterator it = cache.find(next);
 			while(it != cache.end() && it->first == next) {
-				lite_thread_run(it->second, send_to);
+				send_to->run(it->second);
 				cache_t::iterator it_del = it;
 				it++;
 				next++;
@@ -78,24 +73,12 @@ public:
 			}
 		} else {
 			// Пришло не по порядку, сохранение в кэш
-			cache_t::iterator it = cache.find(d->idx);
+			cache_t::iterator it = cache.find(m->idx);
 			if(it != cache.end()) { // Сообщение с таким номером уже есть в кэше
-				lite_error("%s receive two msg with idx#%llu", handle()->name_get().c_str(), (uint64_t)d->idx);
+				lite_log(LITE_ERROR_USER, "%s receive two msg with idx#%llu", name_get().c_str(), (uint64_t)m->idx);
 				return;
 			}
-			cache[d->idx] = lite_msg_copy(msg);
+			cache[m->idx] = lite_msg_copy(m);
 		}
 	}
 };
-
-// Создание объекта и инициализация
-template <typename T>
-static lite_actor_t* lite_order_create(const std::string& name, lite_actor_t* send_to) {
-	lite_actor_t* la = lite_actor_create<lite_order_t<T>>(name);
-	lite_msg_t* msg = lite_msg_create<lite_actor_t*>();
-	lite_actor_t** a = lite_msg_data<lite_actor_t*>(msg);
-	assert(a != NULL);
-	*a = send_to;
-	lite_thread_run(msg, la); // Отправка хэндла куда слать упорядоченный поток сообщений
-	return la;
-}
