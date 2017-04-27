@@ -282,6 +282,8 @@ void actor_start(int threads) {
 		}
 	}
 
+	printf("Init end: %lld msec\n", lite_time_now());
+
 	lite_thread_end(); // Ожидание окончания расчета
 }
 

@@ -149,6 +149,7 @@
     <ClCompile Include="card_raytracer.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\lite_thread.h" />
     <ClInclude Include="..\lite_thread_util.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

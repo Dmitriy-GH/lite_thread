@@ -10,8 +10,7 @@
 
 //------------------------------------------------------------------------
 // Сообщение
-class msg_t : public lite_msg_t {
-public:
+struct msg_t : public lite_msg_t {
 	uint32_t x;
 };
 
@@ -101,8 +100,7 @@ public:
 };
 
 // Сообщение необрабатываемого типа
-class msg_bad_t : public lite_msg_t {
-public:
+struct msg_bad_t : public lite_msg_t {
 	uint32_t x;
 };
 
