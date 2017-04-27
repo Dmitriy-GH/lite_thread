@@ -827,7 +827,7 @@ protected:
 				if (msg == NULL) break;
 				// Запуск функции
 				ti().msg_del = msg; // Пометка на удаление
-				ti().need_wake_up = false;
+				//ti().need_wake_up = false;
 				recv(msg); // Обработка
 				if (msg == ti().msg_del) delete msg;
 				#ifdef LT_STAT
@@ -902,7 +902,6 @@ public:
 		lite_msg_t::type_set(msg);
 		if(check_type(msg)) {
 			push(msg);
-			if (need_wake_up()) lite_thread_wake_up();
 		}
 	}
 
@@ -941,7 +940,6 @@ private:
 	// static переменные уровня потока -------------------------------------------------
 	struct thread_info_t {
 		lite_msg_t* msg_del;		// Обрабатываемое сообщение, будет удалено после обработки
-		bool need_wake_up;			// Необходимо будить другой поток при отправке
 		lite_actor_t* la_next_run;	// Следующий на выполнение актор
 		lite_actor_t* la_now_run;	// Текущий актор
 		lite_resource_t* lr_now_used;// Текущий захваченный ресурс
@@ -960,7 +958,7 @@ private:
 	struct static_info_t {
 		lite_name_idx_t la_name_idx;// Индекс для поиска lite_actor_t* по имени
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
-		lite_actor_list_t la_list; // Список акторов
+		lite_actor_list_t la_list;	// Список акторов
 		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
 		lite_resource_t* res_default = {0};// Ресурс по умолчанию
 	};
@@ -985,7 +983,9 @@ private:
 		// Запись в кэш ресурса
 		la->resource->la_cache.push(la);
 
-		if (!ti().need_wake_up) ti().need_wake_up = la->resource->is_free();
+		if(la->resource->is_free()) {
+			lite_thread_wake_up();
+		}
 	}
 
 	// Получение из кэша указателя на актор ожидающий исполнения
@@ -1078,32 +1078,34 @@ private:
 		}
 	}
 
-	static bool need_wake_up() {
-		return ti().need_wake_up;
-	}
-
 	// Очистка всего
 	static void clear() noexcept {
-		lite_lock_t lck(si().mtx_idx); // Блокировка
-		lite_lock_t lck2(si().mtx_list); // Блокировка
-
-		lite_actor_t* la_log = name_find("log");
-
-		for (auto& a : si().la_list) {
-			if (a != la_log) {
-				delete a;
+		while (!si().la_list.empty()) {
+			lite_actor_t* la_del = NULL;
+			{
+				lite_lock_t lck(si().mtx_list); // Блокировка
+				if(si().la_list.back()->name == "log") { // "log" удаляется последним, т.к. могли быть записи в деструкторах
+					la_del = si().la_list[0];
+					si().la_list[0] = si().la_list.back();
+				} else {
+					la_del = si().la_list.back();
+				}
+				si().la_list.pop_back();
 			}
+			if(la_del->name == "log") {
+				la_del->run_all();
+				resource_lock(NULL);
+			}
+			if(!la_del->name.empty()) { // Удаление из индекса
+				lite_lock_t lck(si().mtx_idx); // Блокировка
+				lite_name_idx_t::iterator it = si().la_name_idx.find(la_del->name);
+				if (it != si().la_name_idx.end()) si().la_name_idx.erase(it);
+			}
+			delete la_del;
 		}
-		si().la_list.clear();
 
-		// Вывод сообщений отправленных из деструкторов
-		if (la_log != NULL) {
-			la_log->run_all();
-			resource_lock(NULL);
-			delete la_log;
-		}
+		assert(si().la_name_idx.empty());
 
-		si().la_name_idx.clear();
 		si().res_default = NULL;
 	}
 
@@ -1174,7 +1176,7 @@ class lite_thread_t : lite_align64_t {
 
 	// Общие данные всех потоков
 	struct static_info_t {
-		alignas(64) std::atomic<lite_thread_t*> worker_free = {0}; // Указатель на свободный поток
+		std::atomic<lite_thread_t*> worker_free = {0}; // Указатель на свободный поток
 		std::vector<lite_thread_t*> worker_list;	// Массив описателей потоков
 		std::atomic<size_t> thread_count;			// Количество запущеных потоков
 		lite_mutex_t mtx;							// Блокировка доступа к массиву потоков
@@ -1293,7 +1295,7 @@ class lite_thread_t : lite_align64_t {
 			bool stop = false;
 			{
 				#ifdef LT_DEBUG
-				lite_log(0, "thread#%d sleep", (int)lt->num);
+				lite_log(0, "thread#%d sleep at %lld ms", (int)lt->num, lite_time_now());
 				#endif
 				if(thread_work() == 0) si().cv_end.notify_one(); // Если никто не работает, то разбудить ожидание завершения
 				lite_thread_t* wf = si().worker_free;
