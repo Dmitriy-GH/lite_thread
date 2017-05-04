@@ -122,6 +122,24 @@ type_add(lite_msg_type<T>())
 actor->parallel_set(int max_threads)
 
 
+ЗАПУСК ПО ТАЙМЕРУ ----------------------------------------------------------------------------
+
+actor->timer_set(int time_ms)
+
+Устанавливает период запуска с интервалом time_ms. Отсчет начинается с момента установки.
+При time_ms <= 0 отключение таймера.
+
+В дочернем классе необходимо прописать метод timer()
+class actor_t : public lite_actor_t {
+	void timer() override {
+	}
+}
+
+Вызов по таймеру имеет приоритет ниже чем обработка сообщений, поэтому происходит только при пустой 
+очереди сообщений актора. Если по каким-либо причинам был пропушен момент запуска и наступил следующий, 
+то запуск будет один раз.
+
+
 РЕСУРСЫ --------------------------------------------------------------------------------------
 
 Ресурс ограничивает сколько может быть запущено одновременно акторов привязанных к ресурсу.
@@ -235,6 +253,7 @@ lite_thread_end()
 #include <mutex>
 #include <condition_variable>
 #include <unordered_map>
+#include <map>
 #include <string>
 #include <assert.h>
 #include <time.h>
@@ -438,10 +457,13 @@ public:
 class lite_actor_t;
 class lite_thread_t;
 class lite_msg_queue_t;
+class lite_timer_t;
 
 static void lite_log(int err, const char* data, ...) noexcept;
 static size_t lite_thread_num() noexcept;
 static void lite_thread_wake_up() noexcept;
+static void lite_timer_run(lite_actor_t* actor, int time_ms) noexcept;
+
 //----------------------------------------------------------------------------------
 //-------- СООБЩЕНИE ---------------------------------------------------------------
 //----------------------------------------------------------------------------------
@@ -750,6 +772,7 @@ class lite_actor_t : public lite_align64_t {
 	std::atomic<int> actor_free;		// Количество свободных акторов, т.е. сколько можно запускать
 	std::atomic<int> thread_max;		// Количество потоков, в скольки можно одновременно выполнять
 	bool in_cache;						// Помещен в кэш планирования запуска
+	bool timer_run;						// Требуется запуск обработки сигнала таймера
 	std::string name;					// Наименование актора
 
 	std::vector<size_t> type_list;		// Список обрабатываемых типов
@@ -758,7 +781,7 @@ class lite_actor_t : public lite_align64_t {
 protected:
 	//---------------------------------
 	// Конструктор
-	lite_actor_t() : actor_free(1), thread_max(1), in_cache(false) {
+	lite_actor_t() : actor_free(1), thread_max(1), in_cache(false), timer_run(false) {
 		if(si().res_default == NULL) {
 			si().res_default = lite_resource_manage_t::get("CPU", LT_RESOURCE_DEFAULT);
 		}
@@ -768,7 +791,7 @@ protected:
 
 	// Проверка готовности к запуску
 	bool is_ready() noexcept {
-		return (!msg_queue.empty() && actor_free > 0 && (resource == NULL || resource == ti().lr_now_used || resource->is_free()));
+		return ((!msg_queue.empty() || timer_run) && actor_free > 0 && (resource == NULL || resource == ti().lr_now_used || resource->is_free()));
 	}
 
 	// Постановка сообщения в очередь
@@ -807,6 +830,10 @@ protected:
 				#ifdef LT_STAT
 				lite_thread_stat_t::ti().stat_msg_send++;
 				#endif
+			}
+			if(timer_run) {
+				timer_run = false;
+				timer();
 			}
 			in_cache = false;
 		}
@@ -879,7 +906,7 @@ public:
 		}
 	}
 
-	//	// Добавление обрабатываемого типа
+	// Добавление обрабатываемого типа
 	void type_add(size_t type) noexcept {
 		bool found = false;
 		for (auto& t : type_list) {
@@ -889,6 +916,19 @@ public:
 			}
 		}
 		if (!found) type_list.push_back(type);
+	}
+
+	// Установка периода вызова timer()
+	void timer_set(int time_ms) noexcept {
+		lite_timer_run(this, time_ms);
+	}
+
+	// Вызов timer()
+	void timer_alert() noexcept {
+		if (!timer_run) {
+			timer_run = true;
+			cache_push(this);
+		}
 	}
 
 	#ifdef LT_STAT
@@ -905,9 +945,13 @@ public:
 	//-----------------------------------------------------------------------------------
 	// Обработчик сообщения, прописывать в дочернем классе
 	virtual void recv(lite_msg_t* msg) {
-		lite_log(LITE_ERROR_NOT_IMPLEMENTED, "method '%s' recv() is not implemented. Recv '%s'", typeid(this).name(), msg->type_descr().c_str());
+		lite_log(LITE_ERROR_NOT_IMPLEMENTED, "%s method recv() is not implemented. Recv '%s'", name_get().c_str(), msg->type_descr().c_str());
 	}
-	
+
+	virtual void timer() {
+		lite_log(LITE_ERROR_NOT_IMPLEMENTED, "%s method timer() is not implemented.", name_get().c_str());
+	}
+
 	virtual ~lite_actor_t() {}
 
 private:
@@ -1134,6 +1178,119 @@ public: //-------------------------------------------------------------
 
 };
 
+//-------------------------------------------------------------------------
+//---------------------- ТАЙМЕР -------------------------------------------
+//-------------------------------------------------------------------------
+// Вызов акторов по таймеру.
+
+class lite_timer_t {
+
+	struct task_t { // Задание
+		lite_actor_t* la;	// Актор
+		int step;			// Периодичность оповещения, мс
+	};
+	typedef std::multimap<int64_t, task_t> task_list_t; // Список заданий с сортировкой по времени срабатывания
+
+	task_list_t task_list;
+
+
+	std::thread thread;			// Поток ожидания
+
+	std::mutex mtx;				// Для засыпания
+	std::condition_variable cv;	// Для засыпания
+
+	// Копирование с учетом типа
+	//template <typename T>
+	//static lite_msg_t* copy_msg(lite_msg_t* msg) {
+	//	return new T(*static_cast<T*>(msg));
+	//}
+
+	// Функция потока
+	static void thread_func(lite_timer_t* const tmr) noexcept {
+		#ifdef LT_DEBUG
+		lite_log(0, "timer thread start");
+		#endif
+		std::unique_lock<std::mutex> lck(tmr->mtx);
+		while(!tmr->task_list.empty()) {
+			int64_t now = lite_time_now(), sleep_ms = 0;
+
+			while(true) { // Запуск тех, у кого время наступило
+				task_list_t::iterator it = tmr->task_list.begin();
+				if (it->first > now) {
+					now = lite_time_now();
+					if(it->first > now) {
+						sleep_ms = it->first - now + 1;
+						break;
+					}
+				}
+				it->second.la->timer_alert();
+				int64_t next = it->first + it->second.step;
+				while(next <= now) next += it->second.step;
+				tmr->task_list.insert(std::pair<int64_t, task_t>(next, it->second));
+				tmr->task_list.erase(it);
+			}
+
+			assert(sleep_ms > 0);
+			tmr->cv.wait_for(lck, std::chrono::milliseconds(sleep_ms)); // Ожидание времени следущей сработки
+		}
+		#ifdef LT_DEBUG
+		lite_log(0, "timer thread stop");
+		#endif	
+	}
+
+	// Поиск настроек актора
+	task_list_t::iterator find(lite_actor_t* la) noexcept {
+		task_list_t::iterator it = task_list.begin();
+		for(; it != task_list.end(); it++) {
+			if (it->second.la == la) break;
+		}
+		return it;
+	}
+
+public:
+	// Добавление таймера 
+	void set(lite_actor_t* la, int time_ms) noexcept {
+		lite_log(0, "timer %d ms for %s", time_ms, la->name_get().c_str());
+		std::unique_lock<std::mutex> lck(mtx); // Блокировка
+		bool start_thread = task_list.empty();
+
+		// Удаление предыдущих настроек для la
+		task_list_t::iterator it = find(la);
+		if (it != task_list.end()) task_list.erase(it);
+
+		if (time_ms <= 0) return; // Остановка таймера
+
+
+		task_t t;
+		t.la = la;
+		t.step = time_ms;
+		task_list.insert(std::pair<int64_t, task_t>(lite_time_now() + time_ms, t));
+
+		lck.unlock();
+		if(start_thread) { // Первое задание. Запуск потока.
+			if(thread.joinable()) {
+				cv.notify_all();
+				thread.join();
+			}
+			thread = std::thread(thread_func, this);
+		} else {
+			cv.notify_all();
+		}
+	}
+
+	// Завершение работы
+	~lite_timer_t() {
+		{
+			std::unique_lock<std::mutex> lck(mtx); // Блокировка
+			task_list.clear();
+		}
+		if (thread.joinable()) {
+			cv.notify_all();
+			thread.join();
+		}
+	}
+};
+
 //----------------------------------------------------------------------------------
 //----- ПОТОКИ ---------------------------------------------------------------------
 //----------------------------------------------------------------------------------
@@ -1157,6 +1314,7 @@ class lite_thread_t : lite_align64_t {
 		std::atomic<bool> stop = {0};				// Флаг остановки всех потоков
 		std::mutex mtx_end;							// Для ожидания завершения потоков
 		std::condition_variable cv_end;				// Для ожидания завершения потоков
+		lite_timer_t* timer = { 0 };				// Таймер вызова акторов по времени
 	};
 
 	static static_info_t& si() {
@@ -1329,6 +1487,15 @@ public: //-------------------------------------
 		}
 	}
 
+	// Установка таймера для la
+	static void timer_set(lite_actor_t* la, int time_ms) noexcept {
+		if(si().timer == NULL) {
+			if (time_ms <= 0) return;
+			si().timer = new lite_timer_t;
+		}
+		si().timer->set(la, time_ms);
+	}
+
 	// Завершение, ожидание всех потоков
 	static void end() noexcept {
 		// Рассчет еще не начался
@@ -1349,6 +1516,11 @@ public: //-------------------------------------
 		#ifdef LT_DEBUG
 		lite_log(0, "--- stop all ---");
 		#endif	
+		// Остановка таймеров
+		if(si().timer != NULL) {
+			delete si().timer;
+			si().timer = NULL;
+		}
 		// Остановка потоков
 		si().stop = true;
 		while(true) { // Ожидание остановки всех потоков
@@ -1533,4 +1705,8 @@ static void lite_thread_wake_up() noexcept {
 	lite_thread_t::wake_up();
 }
 
+// Запуск с повторами по таймеру
+static void lite_timer_run(lite_actor_t* actor, int time_ms) noexcept {
+	lite_thread_t::timer_set(actor, time_ms);
+}
 #pragma warning( pop )
