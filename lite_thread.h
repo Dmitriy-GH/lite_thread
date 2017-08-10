@@ -102,6 +102,17 @@ actor->name_set(const std::string& name);
 --- Получение объекта по имени
 lite_actor_t* lite_actor_get(const std::string& name)
 
+--- Удаление объекта
+lite_actor_destroy(lite_actor_t* la);
+
+Если перед удалением необходимо выполнить какие-то операции связанные с отправкой сообщений, то прописать 
+это в методе before_destroy()
+
+class actor_t : public lite_actor_t {
+	void before_destroy() override {
+	}
+}
+
 
 Доступные методы базового класса:
 
@@ -586,7 +597,7 @@ public:
 
 	// Чтение сообщения из очереди. lock = false без блокировки использовать msg_first
 	lite_msg_t* pop(bool lock = true) noexcept {
-		lock = true;
+		//lock = true;
 		if (lock) {
 			mtx.lock(); // Блокировка
 		}
@@ -942,10 +953,19 @@ public:
 		lite_align64_t::operator delete(p);
 	}
 	#endif
+
+	// Удаление
+	//void destroy() {
+	//	destroy(this);
+	//}
 	//-----------------------------------------------------------------------------------
 	// Обработчик сообщения, прописывать в дочернем классе
-	virtual void recv(lite_msg_t* msg) {
-		lite_log(LITE_ERROR_NOT_IMPLEMENTED, "%s method recv() is not implemented. Recv '%s'", name_get().c_str(), msg->type_descr().c_str());
+	virtual void recv(lite_msg_t* msg) abstract;
+	//virtual void recv(lite_msg_t* msg) {
+	//	lite_log(LITE_ERROR_NOT_IMPLEMENTED, "%s method recv() is not implemented. Recv '%s'", name_get().c_str(), msg->type_descr().c_str());
+	//}
+
+	virtual void before_destroy() {
 	}
 
 	virtual void timer() {
@@ -979,6 +999,7 @@ private:
 		lite_actor_list_t la_list;	// Список акторов
 		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
 		lite_resource_t* res_default = {0};// Ресурс по умолчанию
+		std::atomic<bool> is_destroy = { false };// Идет удаление всех акторов
 	};
 
 	static static_info_t& si() noexcept {
@@ -1096,37 +1117,6 @@ private:
 		}
 	}
 
-	// Очистка всего
-	static void clear() noexcept {
-		while (!si().la_list.empty()) {
-			lite_actor_t* la_del = NULL;
-			{
-				lite_lock_t lck(si().mtx_list); // Блокировка
-				if(si().la_list.back()->name == "log") { // "log" удаляется последним, т.к. могли быть записи в деструкторах
-					la_del = si().la_list[0];
-					si().la_list[0] = si().la_list.back();
-				} else {
-					la_del = si().la_list.back();
-				}
-				si().la_list.pop_back();
-			}
-			if(la_del->name == "log") {
-				la_del->run_all();
-				resource_lock(NULL);
-			}
-			if(!la_del->name.empty()) { // Удаление из индекса
-				lite_lock_t lck(si().mtx_idx); // Блокировка
-				lite_name_idx_t::iterator it = si().la_name_idx.find(la_del->name);
-				if (it != si().la_name_idx.end()) si().la_name_idx.erase(it);
-			}
-			delete la_del;
-		}
-
-		assert(si().la_name_idx.empty());
-
-		si().res_default = NULL;
-	}
-
 	// Добавление в список акторов
 	static void list_add(lite_actor_t* la) noexcept {
 		lite_lock_t lck2(si().mtx_list); // Блокировка
@@ -1147,7 +1137,84 @@ private:
 		}
 	}
 
+	// Очистка всего
+	static void clear() noexcept {
+		si().is_destroy = true;
+		while (!si().la_list.empty()) {
+			lite_actor_t* la_del = NULL;
+			{
+				lite_lock_t lck(si().mtx_list); // Блокировка
+				if (si().la_list.back()->name == "log") { // "log" удаляется последним, т.к. могли быть записи в деструкторах
+					la_del = si().la_list[0];
+					si().la_list[0] = si().la_list.back();
+				}
+				else {
+					la_del = si().la_list.back();
+				}
+				si().la_list.pop_back();
+			}
+			if (la_del->name == "log") {
+				la_del->run_all();
+				resource_lock(NULL);
+			} else {
+				la_del->before_destroy();
+			}
+			if (!la_del->name.empty()) { // Удаление из индекса
+				lite_lock_t lck(si().mtx_idx); // Блокировка
+				lite_name_idx_t::iterator it = si().la_name_idx.find(la_del->name);
+				if (it != si().la_name_idx.end()) si().la_name_idx.erase(it);
+			}
+			//if (la_del->name != "log") lite_log(0, "%p destroy %s", la_del, la_del->name_get().c_str());
+			delete la_del;
+		}
+
+		assert(si().la_name_idx.empty());
+
+		si().res_default = NULL;
+		si().is_destroy = false;
+	}
+
 public: //-------------------------------------------------------------
+
+	// Удаление одного актора
+	static void destroy(lite_actor_t *la_del) noexcept {
+		if (si().is_destroy) return; // Идет удаление всех
+
+		bool is_del = false;
+		// Удаление из списка
+		{
+			lite_lock_t lck(si().mtx_list); // Блокировка
+			for (auto & l : si().la_list) {
+				if (l == la_del) {
+					if (l != si().la_list.back()) { // Если не последний, то перенос в конец
+						l = si().la_list.back();
+					}
+					si().la_list.pop_back();
+					is_del = true;
+					break;
+				}
+			}
+		}
+		//assert(la_del->msg_queue.empty());
+		if (is_del && !la_del->name.empty()) { // Удаление из индекса
+			lite_lock_t lck(si().mtx_idx); // Блокировка
+			lite_name_idx_t::iterator it = si().la_name_idx.find(la_del->name);
+			if (it != si().la_name_idx.end()) si().la_name_idx.erase(it);
+		}
+		// Дообработка оставщихся сообщений
+		if (is_del) {
+			la_del->timer_set(0);
+			la_del->before_destroy();
+			while (!la_del->msg_queue.empty()) {
+				la_del->run_all();
+				if (!la_del->msg_queue.empty()) Sleep(20);
+			}
+			assert(la_del->msg_queue.empty());
+			//lite_log(0, "destroy %s", la_del->name_get().c_str());
+			delete la_del;
+		}
+	}
+
 	// Получание актора по имени
 	static lite_actor_t* name_find(const std::string& name) {
 		lite_lock_t lck(si().mtx_idx); // Блокировка
@@ -1250,15 +1317,19 @@ class lite_timer_t {
 public:
 	// Добавление таймера 
 	void set(lite_actor_t* la, int time_ms) noexcept {
-		lite_log(0, "timer %d ms for %s", time_ms, la->name_get().c_str());
 		std::unique_lock<std::mutex> lck(mtx); // Блокировка
 		bool start_thread = task_list.empty();
-
+		#ifdef LT_DEBUG
+		lite_log(0, "timer %d ms for %s start_thread = %d", time_ms, la->name_get().c_str(), start_thread);
+		#endif
 		// Удаление предыдущих настроек для la
 		task_list_t::iterator it = find(la);
 		if (it != task_list.end()) task_list.erase(it);
 
-		if (time_ms <= 0) return; // Остановка таймера
+		if (time_ms <= 0) {
+			cv.notify_all();
+			return; // Остановка таймера
+		}
 
 
 		task_t t;
@@ -1278,12 +1349,15 @@ public:
 		}
 	}
 
+	// Остановка всех таймеров
+	void stop_all() {
+		std::unique_lock<std::mutex> lck(mtx); // Блокировка
+		task_list.clear();
+	}
+
 	// Завершение работы
 	~lite_timer_t() {
-		{
-			std::unique_lock<std::mutex> lck(mtx); // Блокировка
-			task_list.clear();
-		}
+		stop_all();
 		if (thread.joinable()) {
 			cv.notify_all();
 			thread.join();
@@ -1474,7 +1548,7 @@ class lite_thread_t : lite_align64_t {
 	}
 
 public: //-------------------------------------
-		// Пробуждение свободного потока
+	// Пробуждение свободного потока
 	static void wake_up() noexcept {
 		lite_thread_t* wf = find_free();
 		if (wf != NULL) {
@@ -1517,7 +1591,7 @@ public: //-------------------------------------
 		lite_log(0, "--- stop all ---");
 		#endif	
 		// Остановка таймеров
-		if(si().timer != NULL) {
+		if (si().timer != NULL) {
 			delete si().timer;
 			si().timer = NULL;
 		}
@@ -1672,6 +1746,11 @@ static size_t lite_msg_type() {
 // Получения указателя на актор по имени
 static lite_actor_t* lite_actor_get(const std::string& name) noexcept {
 	return lite_actor_t::name_find(name);
+}
+
+// Удаление актора
+static void lite_actor_destroy(lite_actor_t* la) noexcept {
+	return lite_actor_t::destroy(la);
 }
 
 // Завершение с ожиданием всех
