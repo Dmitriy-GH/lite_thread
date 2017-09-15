@@ -914,6 +914,8 @@ public:
 		lite_msg_t::type_set(msg);
 		if(check_type(msg)) {
 			push(msg);
+		} else if (msg != ti().msg_del) {
+			delete msg;
 		}
 	}
 

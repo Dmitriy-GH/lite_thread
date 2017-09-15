@@ -1,4 +1,5 @@
 ﻿// Простейшие примеры использования с выводом всего происходящего в потоках в консоль
+//#define LT_STAT
 #define LT_DEBUG
 #define LT_DEBUG_LOG
 #include "../lite_thread.h"
@@ -136,6 +137,9 @@ void test3() { // Основной поток
 class actor_timer_t : public lite_actor_t {
 	void timer() override {
 		lite_log(0, "thread#%d timer() at %lld ms", (int)lite_thread_num(), lite_time_now());
+	}
+
+	void recv(lite_msg_t* msg) override {
 	}
 };
 
