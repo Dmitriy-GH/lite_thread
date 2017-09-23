@@ -82,3 +82,20 @@ public:
 		}
 	}
 };
+
+//----------------------------------------------------------------------------------
+//------ КОЛИЧЕСТВО ЯДЕР ПРОЦЕССОРА ------------------------------------------------
+//----------------------------------------------------------------------------------
+#ifdef LT_WIN
+#include <windows.h>
+int lite_processor_count() {
+	SYSTEM_INFO sysinfo;
+	GetSystemInfo(&sysinfo);
+	return (int)(sysinfo.dwNumberOfProcessors > 0 ? sysinfo.dwNumberOfProcessors : 1);
+}
+#else
+int lite_processor_count() {
+	return 4;
+}
+#endif
+

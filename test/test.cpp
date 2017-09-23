@@ -1,4 +1,5 @@
 ﻿// Простейшие примеры использования с выводом всего происходящего в потоках в консоль
+//#define LT_STAT
 #define LT_DEBUG
 #define LT_DEBUG_LOG
 #include "../lite_thread.h"
@@ -128,6 +129,33 @@ void test3() { // Основной поток
 	lite_thread_end(); // Ожидание завершения работы
 }
 
+//------------------------------------------------------------------------
+// Тест 4.
+// Запуск по таймеру в течении 3 сек. с интервалом 0.5 сек (в выводе recv 400)
+
+// Актор с таймером 
+class actor_timer_t : public lite_actor_t {
+	void timer() override {
+		lite_log(0, "thread#%d timer() at %lld ms", (int)lite_thread_num(), lite_time_now());
+	}
+
+	void recv(lite_msg_t* msg) override {
+	}
+};
+
+void test4() { // Основной поток
+	lite_log(0, "--- test 4 ---");
+	actor_timer_t* la = new actor_timer_t();
+
+	la->timer_set(500); // Запуск с интервалом 0.5 сек
+
+	std::this_thread::sleep_for(std::chrono::seconds(3)); // для запусков по таймеру
+
+	// Ожидание завершения работы
+	lite_thread_end();
+}
+
+//------------------------------------------------------------------------
 
 int main() {
 
@@ -136,6 +164,8 @@ int main() {
 	test2();
 
 	test3();
+
+	test4();
 
 #ifdef _DEBUG
 	printf("Press any key ...\n");
