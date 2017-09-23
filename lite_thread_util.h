@@ -94,12 +94,8 @@ int lite_processor_count() {
 	return (int)(sysinfo.dwNumberOfProcessors > 0 ? sysinfo.dwNumberOfProcessors : 1);
 }
 #else
-#define <unistd.h>
-#define <limits.h>
-
 int lite_processor_count() {
-	int cnt = (int)sysconf(_SC_NPROC_ONLN);
-	return cnt > 0 ? cnt : 1;
+	return 1;
 }
 #endif
 
