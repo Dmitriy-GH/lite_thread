@@ -237,9 +237,17 @@ lite_thread_end()
 
 #if defined(_WIN32) || defined(_WIN64)
 #define LT_WIN
+#else
+#include <time.h>
+void Sleep(int msec) {
+	struct timespec t, ost;
+	t.tv_sec = msec / 1000;
+	t.tv_nsec = (msec % 1000) * 1000000;
+	nanosleep(&t, NULL);
+}
 #endif
 
-#define LT_VERSION "0.9.1" // Версия библиотеки
+#define LT_VERSION "0.9.2" // Версия библиотеки
 
 #ifndef LT_RESOURCE_DEFAULT
 #define LT_RESOURCE_DEFAULT 32 // Предел ресурса по умолчанию
@@ -962,7 +970,7 @@ public:
 	//}
 	//-----------------------------------------------------------------------------------
 	// Обработчик сообщения, прописывать в дочернем классе
-	virtual void recv(lite_msg_t* msg) abstract;
+	virtual void recv(lite_msg_t*) abstract;
 	//virtual void recv(lite_msg_t* msg) {
 	//	lite_log(LITE_ERROR_NOT_IMPLEMENTED, "%s method recv() is not implemented. Recv '%s'", name_get().c_str(), msg->type_descr().c_str());
 	//}
