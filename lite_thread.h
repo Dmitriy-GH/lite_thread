@@ -970,7 +970,7 @@ public:
 	//}
 	//-----------------------------------------------------------------------------------
 	// Обработчик сообщения, прописывать в дочернем классе
-	virtual void recv(lite_msg_t*) abstract;
+	virtual void recv(lite_msg_t*) = 0;
 	//virtual void recv(lite_msg_t* msg) {
 	//	lite_log(LITE_ERROR_NOT_IMPLEMENTED, "%s method recv() is not implemented. Recv '%s'", name_get().c_str(), msg->type_descr().c_str());
 	//}
