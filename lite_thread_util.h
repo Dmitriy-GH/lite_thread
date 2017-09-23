@@ -86,7 +86,7 @@ public:
 //----------------------------------------------------------------------------------
 //------ КОЛИЧЕСТВО ЯДЕР ПРОЦЕССОРА ------------------------------------------------
 //----------------------------------------------------------------------------------
-#if defined(_WIN32) || defined(_WIN64)
+#ifdef LT_WIN
 #include <windows.h>
 int lite_processor_count() {
 	SYSTEM_INFO sysinfo;
@@ -95,7 +95,7 @@ int lite_processor_count() {
 }
 #else
 int lite_processor_count() {
-	return 1;
+	return 4;
 }
 #endif
 
