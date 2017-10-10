@@ -233,10 +233,13 @@ lite_thread_end()
 Рекомендуется использовать вместе с LT_DEBUG_LOG, т.к. используется lite_log(), иначе вывод вызывает
 дополнительное изменение состояния потоков.
 
+--- Компиляция в DLL под WinXP (там проблемы с thread_local)
+#define LT_XP_DLL
 */
 
 #if defined(_WIN32) || defined(_WIN64)
 #define LT_WIN
+#include <windows.h>
 #else
 #include <time.h>
 void Sleep(int msec) {
@@ -279,13 +282,46 @@ void Sleep(int msec) {
 #include <string.h>
 #include <stdarg.h>
 
+//----------------------------------------------------------------------------------
+//-------- ВЫРАВНИВАНИЕ В ПАМЯТИ ---------------------------------------------------
+//----------------------------------------------------------------------------------
+// Выделение памяти с выравниванием под кэшлинию (кратно 0x40)
+class lite_align64_t {
+public:
+	lite_align64_t() {}
+	lite_align64_t(int) {}
+
+	void *operator new(size_t size) {
+		void* p;
+#ifdef LT_WIN
+		p = _aligned_malloc(size, 0x40);
+#else
+		if (posix_memalign(&p, 0x40, size)) p = NULL;
+#endif
+		if (p == NULL) {
+			assert(p != NULL);
+			throw std::bad_alloc();
+		}
+		//printf("alloc %p\n", p);
+		return p;
+	}
+
+	void operator delete(void *p) {
+#ifdef LT_WIN
+		_aligned_free(p);
+#else
+		free(p);
+#endif
+	}
+};
+
 #ifdef LT_STAT
 //----------------------------------------------------------------------------------
 //------ СЧЕТЧИКИ СТАТИСТИКИ -------------------------------------------------------
 //----------------------------------------------------------------------------------
 static int64_t lite_time_now();
 
-class lite_thread_stat_t {
+class lite_thread_stat_t : public lite_align64_t {
 	// Глобальные счетчики
 	static lite_thread_stat_t& si() noexcept {
 		static lite_thread_stat_t x;
@@ -312,11 +348,35 @@ public:
 	size_t stat_queue_max;			// Максимальная глубина очереди
 	size_t stat_msg_send;			// Обработано сообщений
 
+#ifdef LT_XP_DLL
+	static uint32_t tls_idx() noexcept {
+		static uint32_t x = TlsAlloc();
+		return x;
+	}
+
 	// Счетчики потока
+	static lite_thread_stat_t& ti() noexcept {
+		lite_thread_stat_t* x = (lite_thread_stat_t*)TlsGetValue(tls_idx());
+		if (x == NULL) {
+			x = new lite_thread_stat_t();
+			TlsSetValue(tls_idx(), x);
+		}
+		return *x;
+	}
+
+	static void thread_end() {
+		lite_thread_stat_t* x = (lite_thread_stat_t*)TlsGetValue(tls_idx());
+		if (x != NULL) {
+			delete x;
+			TlsSetValue(tls_idx(), NULL);
+		}
+	}
+#else
 	static lite_thread_stat_t& ti() noexcept {
 		thread_local lite_thread_stat_t x;
 		return x;
 	}
+#endif
 
 	lite_thread_stat_t() {
 		init();
@@ -393,7 +453,6 @@ public:
 //----------------------------------------------------------------------------------
 #ifdef LT_WIN
 #define LOCK_TYPE_LT "critical section"
-#include <windows.h>
 class lite_mutex_t {
 	CRITICAL_SECTION cs;
 public:
@@ -438,37 +497,6 @@ static int64_t lite_time_now() {
 	std::chrono::duration<double> time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t);
 	return (int64_t)(time_span.count() * 1000);
 }
-
-//----------------------------------------------------------------------------------
-//-------- ВЫРАВНИВАНИЕ В ПАМЯТИ ---------------------------------------------------
-//----------------------------------------------------------------------------------
-// Выделение памяти с выравниванием под кэшлинию (кратно 0x40)
-class lite_align64_t {
-public:
-	void *operator new(size_t size) {
-		void* p;
-#ifdef LT_WIN
-		p = _aligned_malloc(size, 0x40);
-#else
-		if(posix_memalign(&p, 0x40, size)) p = NULL;
-#endif
-		if (p == NULL) {
-			assert(p != NULL);
-			throw std::bad_alloc();
-		}
-		//printf("alloc %p\n", p);
-		return p;
-	}
-
-	void operator delete(void *p) {
-#ifdef WIN32
-		_aligned_free(p);
-#else
-		free(p);
-#endif
-	}
-};
-
 
 //----------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------
@@ -979,7 +1007,17 @@ public:
 
 private:
 	// static переменные уровня потока -------------------------------------------------
+
+#ifdef LT_XP_DLL
+	struct thread_info_t : public lite_align64_t {
+
+		static uint32_t tls_idx() noexcept {
+			static uint32_t x = TlsAlloc();
+			return x;
+		}
+#else
 	struct thread_info_t {
+#endif
 		lite_msg_t* msg_del;		// Обрабатываемое сообщение, будет удалено после обработки
 		lite_actor_t* la_next_run;	// Следующий на выполнение актор
 		lite_actor_t* la_now_run;	// Текущий актор
@@ -987,8 +1025,18 @@ private:
 	};
 
 	static thread_info_t& ti() noexcept {
+#ifdef LT_XP_DLL
+		thread_info_t* x = (thread_info_t*)TlsGetValue(thread_info_t::tls_idx());
+		if (x == NULL) {
+			x = new thread_info_t();
+			memset(x, 0, sizeof(thread_info_t));
+			TlsSetValue(thread_info_t::tls_idx(), x);
+		}
+		return *x;
+#else
 		thread_local thread_info_t ti = {0};
 		return ti;
+#endif
 	}
 
 
@@ -1246,6 +1294,16 @@ public: //-------------------------------------------------------------
 		si().res_default->max_set(max);
 	}
 
+#ifdef LT_XP_DLL
+	// Извещение о завершении потока
+	static void thread_end() {
+		thread_info_t* x = (thread_info_t*)TlsGetValue(thread_info_t::tls_idx());
+		if (x != NULL) {
+			delete x;
+			TlsSetValue(thread_info_t::tls_idx(), NULL);
+		}
+	}
+#endif
 };
 
 //-------------------------------------------------------------------------
@@ -1547,7 +1605,12 @@ class lite_thread_t : lite_align64_t {
 		#ifdef LT_DEBUG
 		lite_log(0, "thread#%d stop", (int)lt->num);
 		#endif
-
+		#ifdef LT_XP_DLL
+		lite_actor_t::thread_end();
+		#ifdef LT_STAT
+		lite_thread_stat_t::thread_end();
+		#endif
+		#endif
 	}
 
 public: //-------------------------------------
@@ -1639,19 +1702,30 @@ public: //-------------------------------------
 		#ifdef LT_STAT
 		lite_thread_stat_t::ti().print_stat();
 		#endif		
+		#ifdef LT_XP_DLL
+		lite_actor_t::thread_end();
+		#ifdef LT_STAT
+		lite_thread_stat_t::thread_end();
+		#endif		
+		#endif
 		#ifdef LT_DEBUG
 		printf("         !!! end !!!\n");
 		#endif
 		si().stop = false;
+
 	}
 
 	// Номер текущего потока
 	static size_t this_num(size_t num = 999) noexcept {
+#ifdef LT_XP_DLL
+		return GetCurrentThreadId();
+#else
 		thread_local size_t n = 999;
 		if (num != 999) {
 			n = num;
 		}
 		return n;
+#endif
 	}
 };
 
