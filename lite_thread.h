@@ -378,7 +378,7 @@ public:
 		printf("queue_max      %llu\n", (uint64_t)si().stat_queue_max);
 		#endif
 		printf("msg_send       %llu\n", (uint64_t)si().stat_msg_send);
-		size_t time_ms = lite_time_now();
+		int64_t time_ms = lite_time_now();
 		printf("msg_send/sec   %llu\n", (uint64_t)si().stat_msg_send * 1000 / (time_ms > 0 ? time_ms : 1)); // Сообщений в секунду
 		printf("\n");
 		if (si().stat_msg_create != si().stat_msg_erase) printf("!!! ERROR: lost %lld messages (erase %lld)\n\n", (int64_t)si().stat_msg_create - si().stat_msg_erase, (int64_t)si().stat_msg_erase); // Утечка памяти
