@@ -302,7 +302,6 @@ public:
 			assert(p != NULL);
 			throw std::bad_alloc();
 		}
-		//printf("alloc %p\n", p);
 		return p;
 	}
 
@@ -315,13 +314,57 @@ public:
 	}
 };
 
+//----------------------------------------------------------------------------------
+//------ ПЕРЕМЕННЫЕ ПОТОКА (для DLL под XP) ----------------------------------------
+//----------------------------------------------------------------------------------
+#ifdef LT_XP_DLL
+template <typename T>
+class lite_thread_info_t : public lite_align64_t {
+	static uint32_t tls_idx() noexcept {
+		static uint32_t x = TlsAlloc();
+		return x;
+	}
+public:
+	static T& tls_get() noexcept {
+		T* x = (T*)TlsGetValue(tls_idx());
+		if (x == NULL) {
+			x = new T();
+			memset(x, 0, sizeof(T));
+			TlsSetValue(tls_idx(), x);
+		}
+		return *x;
+	}
+
+	static void tls_free() noexcept {
+		T* x = (T*)TlsGetValue(tls_idx());
+		if (x != NULL) {
+			delete x;
+			TlsSetValue(tls_idx(), NULL);
+		}
+	}
+};
+#else
+template <typename T>
+class lite_thread_info_t {
+
+public:
+	static T& tls_get() noexcept {
+		thread_local T x;
+		return x;
+	}
+
+	static void tls_free() noexcept {
+	}
+};
+#endif
+
 #ifdef LT_STAT
 //----------------------------------------------------------------------------------
 //------ СЧЕТЧИКИ СТАТИСТИКИ -------------------------------------------------------
 //----------------------------------------------------------------------------------
 static int64_t lite_time_now();
 
-class lite_thread_stat_t : public lite_align64_t {
+class lite_thread_stat_t : public lite_thread_info_t<lite_thread_stat_t> {
 	// Глобальные счетчики
 	static lite_thread_stat_t& si() noexcept {
 		static lite_thread_stat_t x;
@@ -348,36 +391,18 @@ public:
 	size_t stat_queue_max;			// Максимальная глубина очереди
 	size_t stat_msg_send;			// Обработано сообщений
 
-#ifdef LT_XP_DLL
-	static uint32_t tls_idx() noexcept {
-		static uint32_t x = TlsAlloc();
-		return x;
-	}
-
+	//---------------------------------------------------------------------
 	// Счетчики потока
 	static lite_thread_stat_t& ti() noexcept {
-		lite_thread_stat_t* x = (lite_thread_stat_t*)TlsGetValue(tls_idx());
-		if (x == NULL) {
-			x = new lite_thread_stat_t();
-			TlsSetValue(tls_idx(), x);
-		}
-		return *x;
+		return tls_get();
 	}
 
-	static void thread_end() {
-		lite_thread_stat_t* x = (lite_thread_stat_t*)TlsGetValue(tls_idx());
-		if (x != NULL) {
-			delete x;
-			TlsSetValue(tls_idx(), NULL);
-		}
+	// Сигнал о зачершении потока
+	static void thread_end() noexcept {
+		tls_free();
 	}
-#else
-	static lite_thread_stat_t& ti() noexcept {
-		thread_local lite_thread_stat_t x;
-		return x;
-	}
-#endif
 
+	//---------------------------------------------------------------------
 	lite_thread_stat_t() {
 		init();
 		lite_time_now(); // Запуск отсчета времени
@@ -517,7 +542,6 @@ static void lite_timer_run(lite_actor_t* actor, int time_ms) noexcept;
 struct lite_msg_t : public lite_align64_t {
 public:
 	size_t type = {0};		// Тип сообщения
-	//size_t _size;		// Размер data, байт
 
 	friend lite_msg_queue_t;
 protected:
@@ -633,7 +657,6 @@ public:
 
 	// Чтение сообщения из очереди. lock = false без блокировки использовать msg_first
 	lite_msg_t* pop(bool lock = true) noexcept {
-		//lock = true;
 		if (lock) {
 			mtx.lock(); // Блокировка
 		}
@@ -1007,17 +1030,7 @@ public:
 
 private:
 	// static переменные уровня потока -------------------------------------------------
-
-#ifdef LT_XP_DLL
-	struct thread_info_t : public lite_align64_t {
-
-		static uint32_t tls_idx() noexcept {
-			static uint32_t x = TlsAlloc();
-			return x;
-		}
-#else
-	struct thread_info_t {
-#endif
+	struct thread_info_t : public lite_thread_info_t<thread_info_t> {
 		lite_msg_t* msg_del;		// Обрабатываемое сообщение, будет удалено после обработки
 		lite_actor_t* la_next_run;	// Следующий на выполнение актор
 		lite_actor_t* la_now_run;	// Текущий актор
@@ -1025,20 +1038,8 @@ private:
 	};
 
 	static thread_info_t& ti() noexcept {
-#ifdef LT_XP_DLL
-		thread_info_t* x = (thread_info_t*)TlsGetValue(thread_info_t::tls_idx());
-		if (x == NULL) {
-			x = new thread_info_t();
-			memset(x, 0, sizeof(thread_info_t));
-			TlsSetValue(thread_info_t::tls_idx(), x);
-		}
-		return *x;
-#else
-		thread_local thread_info_t ti = {0};
-		return ti;
-#endif
+		return thread_info_t::tls_get();
 	}
-
 
 	// static переменные глобальные ----------------------------------------------------
 	typedef std::unordered_map<std::string, lite_actor_t*> lite_name_idx_t;
@@ -1049,8 +1050,8 @@ private:
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
 		lite_actor_list_t la_list;	// Список акторов
 		lite_mutex_t mtx_list;		// Блокировка для доступа к la_list
-		lite_resource_t* res_default = {0};// Ресурс по умолчанию
-		std::atomic<bool> is_destroy = { false };// Идет удаление всех акторов
+		lite_resource_t* res_default;// Ресурс по умолчанию
+		std::atomic<bool> is_destroy;// Идет удаление всех акторов
 	};
 
 	static static_info_t& si() noexcept {
@@ -1215,7 +1216,6 @@ private:
 				lite_name_idx_t::iterator it = si().la_name_idx.find(la_del->name);
 				if (it != si().la_name_idx.end()) si().la_name_idx.erase(it);
 			}
-			//if (la_del->name != "log") lite_log(0, "%p destroy %s", la_del, la_del->name_get().c_str());
 			delete la_del;
 		}
 
@@ -1246,7 +1246,6 @@ public: //-------------------------------------------------------------
 				}
 			}
 		}
-		//assert(la_del->msg_queue.empty());
 		if (is_del && !la_del->name.empty()) { // Удаление из индекса
 			lite_lock_t lck(si().mtx_idx); // Блокировка
 			lite_name_idx_t::iterator it = si().la_name_idx.find(la_del->name);
@@ -1261,7 +1260,6 @@ public: //-------------------------------------------------------------
 				if (!la_del->msg_queue.empty()) Sleep(20);
 			}
 			assert(la_del->msg_queue.empty());
-			//lite_log(0, "destroy %s", la_del->name_get().c_str());
 			delete la_del;
 		}
 	}
@@ -1294,16 +1292,10 @@ public: //-------------------------------------------------------------
 		si().res_default->max_set(max);
 	}
 
-#ifdef LT_XP_DLL
 	// Извещение о завершении потока
 	static void thread_end() {
-		thread_info_t* x = (thread_info_t*)TlsGetValue(thread_info_t::tls_idx());
-		if (x != NULL) {
-			delete x;
-			TlsSetValue(thread_info_t::tls_idx(), NULL);
-		}
+		thread_info_t::tls_free();
 	}
-#endif
 };
 
 //-------------------------------------------------------------------------
@@ -1326,12 +1318,6 @@ class lite_timer_t {
 
 	std::mutex mtx;				// Для засыпания
 	std::condition_variable cv;	// Для засыпания
-
-	// Копирование с учетом типа
-	//template <typename T>
-	//static lite_msg_t* copy_msg(lite_msg_t* msg) {
-	//	return new T(*static_cast<T*>(msg));
-	//}
 
 	// Функция потока
 	static void thread_func(lite_timer_t* const tmr) noexcept {
@@ -1605,11 +1591,9 @@ class lite_thread_t : lite_align64_t {
 		#ifdef LT_DEBUG
 		lite_log(0, "thread#%d stop", (int)lt->num);
 		#endif
-		#ifdef LT_XP_DLL
 		lite_actor_t::thread_end();
 		#ifdef LT_STAT
 		lite_thread_stat_t::thread_end();
-		#endif
 		#endif
 	}
 
@@ -1702,12 +1686,10 @@ public: //-------------------------------------
 		#ifdef LT_STAT
 		lite_thread_stat_t::ti().print_stat();
 		#endif		
-		#ifdef LT_XP_DLL
 		lite_actor_t::thread_end();
 		#ifdef LT_STAT
 		lite_thread_stat_t::thread_end();
 		#endif		
-		#endif
 		#ifdef LT_DEBUG
 		printf("         !!! end !!!\n");
 		#endif
@@ -1717,15 +1699,15 @@ public: //-------------------------------------
 
 	// Номер текущего потока
 	static size_t this_num(size_t num = 999) noexcept {
-#ifdef LT_XP_DLL
+		#ifdef LT_XP_DLL
 		return GetCurrentThreadId();
-#else
+		#else
 		thread_local size_t n = 999;
 		if (num != 999) {
 			n = num;
 		}
 		return n;
-#endif
+		#endif
 	}
 };
 
