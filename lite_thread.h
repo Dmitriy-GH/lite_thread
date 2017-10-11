@@ -322,6 +322,7 @@ template <typename T>
 class lite_thread_info_t : public lite_align64_t {
 	static uint32_t tls_idx() noexcept {
 		static uint32_t x = TlsAlloc();
+		assert(x == TLS_OUT_OF_INDEXES);
 		return x;
 	}
 public:
@@ -852,11 +853,16 @@ protected:
 	//---------------------------------
 	// Конструктор
 	lite_actor_t() : actor_free(1), thread_max(1), in_cache(false), timer_run(false) {
+		MessageBox(0, "1", "lite_actor_t()", 0);
 		if(si().res_default == NULL) {
+			MessageBox(0, "1.1", "lite_actor_t()", 0);
 			si().res_default = lite_resource_manage_t::get("CPU", LT_RESOURCE_DEFAULT);
 		}
+		MessageBox(0, "2", "lite_actor_t()", 0);
 		resource = si().res_default;
+		MessageBox(0, "3", "lite_actor_t()", 0);
 		list_add(this);
+		MessageBox(0, "4", "lite_actor_t()", 0);
 	}
 
 	// Проверка готовности к запуску
@@ -1055,7 +1061,9 @@ private:
 	};
 
 	static static_info_t& si() noexcept {
+		MessageBox(0, "1", "static_info_t& si()", 0);
 		static static_info_t x;
+		MessageBox(0, "2", "static_info_t& si()", 0);
 		return x;
 	}
 
