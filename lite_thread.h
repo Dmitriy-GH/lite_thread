@@ -233,7 +233,7 @@ lite_thread_end()
 Рекомендуется использовать вместе с LT_DEBUG_LOG, т.к. используется lite_log(), иначе вывод вызывает
 дополнительное изменение состояния потоков.
 
---- Компиляция в DLL под WinXP (там проблемы с thread_local)
+--- Компиляция в DLL под WinXP (там проблемы с thread_local и static при явной загрузке)
 #define LT_XP_DLL
 */
 
@@ -321,7 +321,11 @@ public:
 template <typename T>
 class lite_thread_info_t : public lite_align64_t {
 	static uint32_t tls_idx() noexcept {
-		static uint32_t x = TlsAlloc();
+		static uint32_t x = TLS_OUT_OF_INDEXES;
+		if (x == TLS_OUT_OF_INDEXES) {
+			x = TlsAlloc();
+			assert(x != TLS_OUT_OF_INDEXES);
+		}
 		return x;
 	}
 public:
@@ -343,6 +347,18 @@ public:
 		}
 	}
 };
+
+template <typename T>
+class lite_static_info_t : public lite_align64_t {
+public:
+	static T& si() noexcept {
+		static T* x;
+		if(x == NULL) {
+			x = new T();
+		}
+		return *x;
+	}
+};
 #else
 template <typename T>
 class lite_thread_info_t {
@@ -356,6 +372,15 @@ public:
 	static void tls_free() noexcept {
 	}
 };
+
+template <typename T>
+class lite_static_info_t {
+public:
+	static T& si() noexcept {
+		static T x;
+		return x;
+	}
+};
 #endif
 
 #ifdef LT_STAT
@@ -364,12 +389,7 @@ public:
 //----------------------------------------------------------------------------------
 static int64_t lite_time_now();
 
-class lite_thread_stat_t : public lite_thread_info_t<lite_thread_stat_t> {
-	// Глобальные счетчики
-	static lite_thread_stat_t& si() noexcept {
-		static lite_thread_stat_t x;
-		return x;
-	}
+class lite_thread_stat_t : public lite_thread_info_t<lite_thread_stat_t>, public lite_static_info_t<lite_thread_stat_t> {
 
 public:
 	size_t stat_thread_max;			// Максимальное количество потоков запущенных одновременно
@@ -581,14 +601,13 @@ private:
 	// static переменные глобальные ----------------------------------------------------
 	typedef std::unordered_map<size_t, std::string> type_name_idx_t;
 
-	struct static_info_t {
+	struct static_info_t : public lite_static_info_t<static_info_t> {
 		type_name_idx_t tn_idx; // Список типов
 		lite_mutex_t mtx;		// Блокировка для доступа к tn_idx
 	};
 
 	static static_info_t& si() noexcept {
-		static static_info_t x;
-		return x;
+		return static_info_t::si();
 	}
 
 public:
@@ -793,14 +812,13 @@ class lite_resource_manage_t {
 	// static методы глобальные ----------------------------------------------------
 	typedef std::unordered_map<std::string, lite_resource_t*> lite_resource_list_t;
 
-	struct static_info_t {
+	struct static_info_t : public lite_static_info_t<static_info_t> {
 		lite_resource_list_t lr_idx; // Индекс списка ресурсов
 		lite_mutex_t mtx;			// Блокировка для доступа к lr_idx
 	};
 
 	static static_info_t& si() noexcept {
-		static static_info_t x;
-		return x;
+		return static_info_t::si();
 	}
 
 public:
@@ -886,17 +904,18 @@ protected:
 			lite_thread_stat_t::ti().stat_actor_not_run++;
 			#endif
 		} else if (resource_lock(resource)) { // Занимаем ресурс
-			ti().la_next_run = NULL;
-			ti().la_now_run = this;
+			thread_info_t& t = ti();
+			t.la_next_run = NULL;
+			t.la_now_run = this;
 			bool need_lock = (thread_max != 1); // Блокировка нужна только многопоточным акторам
 			while (true) {
 				// Извлечение сообщения из очереди
 				lite_msg_t* msg = msg_queue.pop(need_lock);
 				if (msg == NULL) break;
 				// Запуск функции
-				ti().msg_del = msg; // Пометка на удаление
+				t.msg_del = msg; // Пометка на удаление
 				recv(msg); // Обработка
-				if (msg == ti().msg_del) delete msg;
+				if (msg == t.msg_del) delete msg;
 				#ifdef LT_STAT
 				lite_thread_stat_t::ti().stat_msg_send++;
 				#endif
@@ -1045,7 +1064,7 @@ private:
 	typedef std::unordered_map<std::string, lite_actor_t*> lite_name_idx_t;
 	typedef std::vector<lite_actor_t*> lite_actor_list_t;
 
-	struct static_info_t {
+	struct static_info_t : public lite_static_info_t<static_info_t> {
 		lite_name_idx_t la_name_idx;// Индекс для поиска lite_actor_t* по имени
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
 		lite_actor_list_t la_list;	// Список акторов
@@ -1055,8 +1074,7 @@ private:
 	};
 
 	static static_info_t& si() noexcept {
-		static static_info_t x;
-		return x;
+		return static_info_t::si();
 	}
 
 	// static методы глобальные ----------------------------------------------------
@@ -1065,9 +1083,10 @@ private:
 		assert(la != NULL);
 		if (!la->is_ready() || la->in_cache) return;
 
-		if (ti().la_now_run != NULL && ti().la_now_run->msg_queue.empty() && ti().la_next_run == NULL && ti().lr_now_used == la->resource) {
+		thread_info_t& t = ti();
+		if (t.la_now_run != NULL && t.la_now_run->msg_queue.empty() && t.la_next_run == NULL && t.lr_now_used == la->resource) {
 			// Выпоняется последнее задание текущего актора, запоминаем в локальный кэш потока для обработки его следующим
-			ti().la_next_run = la;
+			t.la_next_run = la;
 			return;
 		}
 
@@ -1081,10 +1100,11 @@ private:
 
 	// Получение из кэша указателя на актор ожидающий исполнения
 	static lite_actor_t* cache_pop() noexcept {
+		thread_info_t& t = ti();
 		// Проверка локального кэша
-		lite_actor_t* la = ti().la_next_run;
+		lite_actor_t* la = t.la_next_run;
 		if (la != NULL) {
-			ti().la_next_run = NULL;
+			t.la_next_run = NULL;
 			if (la->is_ready()) {
 				return la;
 			} else {
@@ -1095,9 +1115,9 @@ private:
 			}
 		}
 
-		if(ti().lr_now_used != NULL) {
+		if(t.lr_now_used != NULL) {
 			// Проверка кэша используемого ресурса
-			while ((la = ti().lr_now_used->la_cache.pop()) != NULL) {
+			while ((la = t.lr_now_used->la_cache.pop()) != NULL) {
 				if (la->is_ready()) {
 					return la;
 				}
@@ -1124,14 +1144,15 @@ private:
 		#endif
 
 		lite_lock_t lck(si().mtx_list); // Блокировка
-		for (lite_actor_list_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
+		lite_actor_list_t& la_list = si().la_list;
+		for (lite_actor_list_t::iterator it = la_list.begin(); it != la_list.end(); ++it) {
 			if ((*it)->is_ready()) {
 				ret = (*it);
 				ret->in_cache = true;
 				if(it != si().la_list.begin()) {
 					// Сдвиг активных ближе к началу
 					lite_actor_list_t::iterator it2 = it;
-					it2--;
+					--it2;
 					(*it) = (*it2);
 					(*it2) = ret;
 				}
@@ -1145,7 +1166,7 @@ private:
 	static size_t count_ready() noexcept {
 		lite_lock_t lck(si().mtx_list); // Блокировка
 		size_t cnt = 0;
-		for (lite_actor_list_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
+		for (lite_actor_list_t::iterator it = si().la_list.begin(); it != si().la_list.end(); ++it) {
 			if ((*it)->is_ready()) {
 				cnt += (*it)->actor_free;
 			}
@@ -1427,7 +1448,7 @@ class lite_thread_t : lite_align64_t {
 	lite_thread_t(size_t num) : num(num), is_free(true), is_end(false) { }
 
 	// Общие данные всех потоков
-	struct static_info_t {
+	struct static_info_t : public lite_static_info_t<static_info_t> {
 		std::atomic<lite_thread_t*> worker_free = {0}; // Указатель на свободный поток
 		std::vector<lite_thread_t*> worker_list;	// Массив описателей потоков
 		std::atomic<size_t> thread_count;			// Количество запущеных потоков
@@ -1439,8 +1460,7 @@ class lite_thread_t : lite_align64_t {
 	};
 
 	static static_info_t& si() {
-		static static_info_t x;
-		return x;
+		return static_info_t::si();
 	}
 
 	// Создание потока
@@ -1700,7 +1720,8 @@ public: //-------------------------------------
 	// Номер текущего потока
 	static size_t this_num(size_t num = 999) noexcept {
 		#ifdef LT_XP_DLL
-		return GetCurrentThreadId();
+		num = GetCurrentThreadId();
+		return num;
 		#else
 		thread_local size_t n = 999;
 		if (num != 999) {
