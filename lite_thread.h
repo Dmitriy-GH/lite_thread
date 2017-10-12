@@ -904,17 +904,18 @@ protected:
 			lite_thread_stat_t::ti().stat_actor_not_run++;
 			#endif
 		} else if (resource_lock(resource)) { // Занимаем ресурс
-			ti().la_next_run = NULL;
-			ti().la_now_run = this;
+			thread_info_t& t = ti();
+			t.la_next_run = NULL;
+			t.la_now_run = this;
 			bool need_lock = (thread_max != 1); // Блокировка нужна только многопоточным акторам
 			while (true) {
 				// Извлечение сообщения из очереди
 				lite_msg_t* msg = msg_queue.pop(need_lock);
 				if (msg == NULL) break;
 				// Запуск функции
-				ti().msg_del = msg; // Пометка на удаление
+				t.msg_del = msg; // Пометка на удаление
 				recv(msg); // Обработка
-				if (msg == ti().msg_del) delete msg;
+				if (msg == t.msg_del) delete msg;
 				#ifdef LT_STAT
 				lite_thread_stat_t::ti().stat_msg_send++;
 				#endif
@@ -1082,9 +1083,10 @@ private:
 		assert(la != NULL);
 		if (!la->is_ready() || la->in_cache) return;
 
-		if (ti().la_now_run != NULL && ti().la_now_run->msg_queue.empty() && ti().la_next_run == NULL && ti().lr_now_used == la->resource) {
+		thread_info_t& t = ti();
+		if (t.la_now_run != NULL && t.la_now_run->msg_queue.empty() && t.la_next_run == NULL && t.lr_now_used == la->resource) {
 			// Выпоняется последнее задание текущего актора, запоминаем в локальный кэш потока для обработки его следующим
-			ti().la_next_run = la;
+			t.la_next_run = la;
 			return;
 		}
 
@@ -1098,10 +1100,11 @@ private:
 
 	// Получение из кэша указателя на актор ожидающий исполнения
 	static lite_actor_t* cache_pop() noexcept {
+		thread_info_t& t = ti();
 		// Проверка локального кэша
-		lite_actor_t* la = ti().la_next_run;
+		lite_actor_t* la = t.la_next_run;
 		if (la != NULL) {
-			ti().la_next_run = NULL;
+			t.la_next_run = NULL;
 			if (la->is_ready()) {
 				return la;
 			} else {
@@ -1112,9 +1115,9 @@ private:
 			}
 		}
 
-		if(ti().lr_now_used != NULL) {
+		if(t.lr_now_used != NULL) {
 			// Проверка кэша используемого ресурса
-			while ((la = ti().lr_now_used->la_cache.pop()) != NULL) {
+			while ((la = t.lr_now_used->la_cache.pop()) != NULL) {
 				if (la->is_ready()) {
 					return la;
 				}
@@ -1141,14 +1144,15 @@ private:
 		#endif
 
 		lite_lock_t lck(si().mtx_list); // Блокировка
-		for (lite_actor_list_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
+		lite_actor_list_t& la_list = si().la_list;
+		for (lite_actor_list_t::iterator it = la_list.begin(); it != la_list.end(); ++it) {
 			if ((*it)->is_ready()) {
 				ret = (*it);
 				ret->in_cache = true;
 				if(it != si().la_list.begin()) {
 					// Сдвиг активных ближе к началу
 					lite_actor_list_t::iterator it2 = it;
-					it2--;
+					--it2;
 					(*it) = (*it2);
 					(*it2) = ret;
 				}
@@ -1162,7 +1166,7 @@ private:
 	static size_t count_ready() noexcept {
 		lite_lock_t lck(si().mtx_list); // Блокировка
 		size_t cnt = 0;
-		for (lite_actor_list_t::iterator it = si().la_list.begin(); it != si().la_list.end(); it++) {
+		for (lite_actor_list_t::iterator it = si().la_list.begin(); it != si().la_list.end(); ++it) {
 			if ((*it)->is_ready()) {
 				cnt += (*it)->actor_free;
 			}
