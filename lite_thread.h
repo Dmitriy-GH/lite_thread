@@ -233,7 +233,7 @@ lite_thread_end()
 Рекомендуется использовать вместе с LT_DEBUG_LOG, т.к. используется lite_log(), иначе вывод вызывает
 дополнительное изменение состояния потоков.
 
---- Компиляция в DLL под WinXP (там проблемы с thread_local)
+--- Компиляция в DLL под WinXP (там проблемы с thread_local и static при явной загрузке)
 #define LT_XP_DLL
 */
 
@@ -321,8 +321,11 @@ public:
 template <typename T>
 class lite_thread_info_t : public lite_align64_t {
 	static uint32_t tls_idx() noexcept {
-		static uint32_t x = TlsAlloc();
-		assert(x == TLS_OUT_OF_INDEXES);
+		static uint32_t x = TLS_OUT_OF_INDEXES;
+		if (x == TLS_OUT_OF_INDEXES) {
+			x = TlsAlloc();
+			assert(x != TLS_OUT_OF_INDEXES);
+		}
 		return x;
 	}
 public:
@@ -344,6 +347,18 @@ public:
 		}
 	}
 };
+
+template <typename T>
+class lite_static_info_t : public lite_align64_t {
+public:
+	static T& si() noexcept {
+		static T* x;
+		if(x == NULL) {
+			x = new T();
+		}
+		return *x;
+	}
+};
 #else
 template <typename T>
 class lite_thread_info_t {
@@ -357,6 +372,15 @@ public:
 	static void tls_free() noexcept {
 	}
 };
+
+template <typename T>
+class lite_static_info_t {
+public:
+	static T& si() noexcept {
+		static T x;
+		return x;
+	}
+};
 #endif
 
 #ifdef LT_STAT
@@ -365,12 +389,7 @@ public:
 //----------------------------------------------------------------------------------
 static int64_t lite_time_now();
 
-class lite_thread_stat_t : public lite_thread_info_t<lite_thread_stat_t> {
-	// Глобальные счетчики
-	static lite_thread_stat_t& si() noexcept {
-		static lite_thread_stat_t x;
-		return x;
-	}
+class lite_thread_stat_t : public lite_thread_info_t<lite_thread_stat_t>, public lite_static_info_t<lite_thread_stat_t> {
 
 public:
 	size_t stat_thread_max;			// Максимальное количество потоков запущенных одновременно
@@ -582,14 +601,13 @@ private:
 	// static переменные глобальные ----------------------------------------------------
 	typedef std::unordered_map<size_t, std::string> type_name_idx_t;
 
-	struct static_info_t {
+	struct static_info_t : public lite_static_info_t<static_info_t> {
 		type_name_idx_t tn_idx; // Список типов
 		lite_mutex_t mtx;		// Блокировка для доступа к tn_idx
 	};
 
 	static static_info_t& si() noexcept {
-		static static_info_t x;
-		return x;
+		return static_info_t::si();
 	}
 
 public:
@@ -794,14 +812,13 @@ class lite_resource_manage_t {
 	// static методы глобальные ----------------------------------------------------
 	typedef std::unordered_map<std::string, lite_resource_t*> lite_resource_list_t;
 
-	struct static_info_t {
+	struct static_info_t : public lite_static_info_t<static_info_t> {
 		lite_resource_list_t lr_idx; // Индекс списка ресурсов
 		lite_mutex_t mtx;			// Блокировка для доступа к lr_idx
 	};
 
 	static static_info_t& si() noexcept {
-		static static_info_t x;
-		return x;
+		return static_info_t::si();
 	}
 
 public:
@@ -853,16 +870,11 @@ protected:
 	//---------------------------------
 	// Конструктор
 	lite_actor_t() : actor_free(1), thread_max(1), in_cache(false), timer_run(false) {
-		MessageBox(0, "1", "lite_actor_t()", 0);
 		if(si().res_default == NULL) {
-			MessageBox(0, "1.1", "lite_actor_t()", 0);
 			si().res_default = lite_resource_manage_t::get("CPU", LT_RESOURCE_DEFAULT);
 		}
-		MessageBox(0, "2", "lite_actor_t()", 0);
 		resource = si().res_default;
-		MessageBox(0, "3", "lite_actor_t()", 0);
 		list_add(this);
-		MessageBox(0, "4", "lite_actor_t()", 0);
 	}
 
 	// Проверка готовности к запуску
@@ -1051,7 +1063,7 @@ private:
 	typedef std::unordered_map<std::string, lite_actor_t*> lite_name_idx_t;
 	typedef std::vector<lite_actor_t*> lite_actor_list_t;
 
-	struct static_info_t {
+	struct static_info_t : public lite_static_info_t<static_info_t> {
 		lite_name_idx_t la_name_idx;// Индекс для поиска lite_actor_t* по имени
 		lite_mutex_t mtx_idx;		// Блокировка для доступа к la_idx. В случае одновременной блокировки сначала mtx_idx затем mtx_list
 		lite_actor_list_t la_list;	// Список акторов
@@ -1061,10 +1073,7 @@ private:
 	};
 
 	static static_info_t& si() noexcept {
-		MessageBox(0, "1", "static_info_t& si()", 0);
-		static static_info_t x;
-		MessageBox(0, "2", "static_info_t& si()", 0);
-		return x;
+		return static_info_t::si();
 	}
 
 	// static методы глобальные ----------------------------------------------------
@@ -1435,7 +1444,7 @@ class lite_thread_t : lite_align64_t {
 	lite_thread_t(size_t num) : num(num), is_free(true), is_end(false) { }
 
 	// Общие данные всех потоков
-	struct static_info_t {
+	struct static_info_t : public lite_static_info_t<static_info_t> {
 		std::atomic<lite_thread_t*> worker_free = {0}; // Указатель на свободный поток
 		std::vector<lite_thread_t*> worker_list;	// Массив описателей потоков
 		std::atomic<size_t> thread_count;			// Количество запущеных потоков
@@ -1447,8 +1456,7 @@ class lite_thread_t : lite_align64_t {
 	};
 
 	static static_info_t& si() {
-		static static_info_t x;
-		return x;
+		return static_info_t::si();
 	}
 
 	// Создание потока
@@ -1708,7 +1716,8 @@ public: //-------------------------------------
 	// Номер текущего потока
 	static size_t this_num(size_t num = 999) noexcept {
 		#ifdef LT_XP_DLL
-		return GetCurrentThreadId();
+		num = GetCurrentThreadId();
+		return num;
 		#else
 		thread_local size_t n = 999;
 		if (num != 999) {
