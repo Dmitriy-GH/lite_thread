@@ -1,26 +1,26 @@
-/*
-Пример DLL работающей в т.ч. под WinXP 
+п»ї/*
+РџСЂРёРјРµСЂ DLL СЂР°Р±РѕС‚Р°СЋС‰РµР№ РІ С‚.С‡. РїРѕРґ WinXP
 
-Подменяется встроенный актор для вывода в лог. 
-Актор выводит сообщения в файл "test.log"
+РџРѕРґРјРµРЅСЏРµС‚СЃСЏ РІСЃС‚СЂРѕРµРЅРЅС‹Р№ Р°РєС‚РѕСЂ РґР»СЏ РІС‹РІРѕРґР° РІ Р»РѕРі.
+РђРєС‚РѕСЂ РІС‹РІРѕРґРёС‚ СЃРѕРѕР±С‰РµРЅРёСЏ РІ С„Р°Р№Р» "test.log"
 
-fntest(const char* str) отправляет str актору.
+fntest(const char* str) РѕС‚РїСЂР°РІР»СЏРµС‚ str Р°РєС‚РѕСЂСѓ.
 */
 
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include "test_dll.h"
 
-#define LT_XP_DLL // Для работы DLL в WinXP, без LT_XP_DLL работает быстрее, но только в Win7+
+#define LT_XP_DLL // Р”Р»СЏ СЂР°Р±РѕС‚С‹ DLL РІ WinXP, Р±РµР· LT_XP_DLL СЂР°Р±РѕС‚Р°РµС‚ Р±С‹СЃС‚СЂРµРµ, РЅРѕ С‚РѕР»СЊРєРѕ РІ Win7+
 #include "../lite_thread.h"
 
 //-------------------------------------------------------------------------
-// Актор для записи в лог
+// РђРєС‚РѕСЂ РґР»СЏ Р·Р°РїРёСЃРё РІ Р»РѕРі
 class logger_t : public lite_actor_t {
 	FILE* f;
 
 	void write(const char* str) {
-		if(f != NULL) {
+		if (f != NULL) {
 			fputs(str, f);
 			fputs("\n", f);
 			fflush(f);
@@ -42,7 +42,7 @@ public:
 
 	~logger_t() {
 		write("stop");
-		if(f != NULL) {
+		if (f != NULL) {
 			fclose(f);
 		}
 	}
@@ -52,29 +52,29 @@ public:
 
 TEST_API void fntest(const char* str) {
 	static bool is_init;
-	if(!is_init) { 
+	if (!is_init) {
 		is_init = true;
-		// Замена встроенного логгера на собственный
+		// Р—Р°РјРµРЅР° РІСЃС‚СЂРѕРµРЅРЅРѕРіРѕ Р»РѕРіРіРµСЂР° РЅР° СЃРѕР±СЃС‚РІРµРЅРЅС‹Р№
 		logger_t* l = new logger_t();
 		l->name_set("log");
 	}
-	// Вывод в лог
+	// Р’С‹РІРѕРґ РІ Р»РѕРі
 	lite_log(0, str);
 }
 
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
 	DisableThreadLibraryCalls(hModule);
-	switch (ul_reason_for_call)	{
-		case DLL_PROCESS_ATTACH:
-			break;
-		case DLL_THREAD_ATTACH:
-			break;
-		case DLL_THREAD_DETACH:
-			break;
-		case DLL_PROCESS_DETACH:
-			lite_thread_end();
-			break;
+	switch (ul_reason_for_call) {
+	case DLL_PROCESS_ATTACH:
+		break;
+	case DLL_THREAD_ATTACH:
+		break;
+	case DLL_THREAD_DETACH:
+		break;
+	case DLL_PROCESS_DETACH:
+		lite_thread_end();
+		break;
 	}
 	return TRUE;
 }
