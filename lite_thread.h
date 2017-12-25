@@ -240,14 +240,6 @@ lite_thread_end()
 #if defined(_WIN32) || defined(_WIN64)
 #define LT_WIN
 #include <windows.h>
-#else
-#include <time.h>
-void Sleep(int msec) {
-	struct timespec t, ost;
-	t.tv_sec = msec / 1000;
-	t.tv_nsec = (msec % 1000) * 1000000;
-	nanosleep(&t, NULL);
-}
 #endif
 
 #define LT_VERSION "0.9.2" // Версия библиотеки
@@ -1278,7 +1270,7 @@ public: //-------------------------------------------------------------
 			la_del->before_destroy();
 			while (!la_del->msg_queue.empty()) {
 				la_del->run_all();
-				if (!la_del->msg_queue.empty()) Sleep(20);
+				if (!la_del->msg_queue.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(20)); 
 			}
 			assert(la_del->msg_queue.empty());
 			delete la_del;
@@ -1736,7 +1728,7 @@ public: //-------------------------------------
 //----- ВЫВОД В ЛОГ ----------------------------------------------------------------
 //----------------------------------------------------------------------------------
 #ifndef LITE_LOG_BUF_SIZE
-#define LITE_LOG_BUF_SIZE 1024
+#define LITE_LOG_BUF_SIZE 4096
 #endif
 
 // Сообщение
