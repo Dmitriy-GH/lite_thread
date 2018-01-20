@@ -235,10 +235,18 @@ lite_thread_end()
 
 --- Компиляция в DLL под WinXP (там проблемы с thread_local и static при явной загрузке)
 #define LT_XP_DLL
+
+--- Компиляция под WinXP не DLL (в XP нет SRWLOCK)
+#define LT_WIN_XP
+
 */
 
 #if defined(_WIN32) || defined(_WIN64)
+#ifdef LT_XP_DLL
+#define LT_WIN_XP
+#else
 #define LT_WIN
+#endif
 #include <windows.h>
 #endif
 
@@ -488,8 +496,9 @@ public:
 //----------------------------------------------------------------------------------
 //------ БЛОКИРОВКИ ----------------------------------------------------------------
 //----------------------------------------------------------------------------------
-#ifdef LT_WIN
+#if defined LT_WIN_XP
 #define LOCK_TYPE_LT "critical section"
+
 class lite_mutex_t {
 	CRITICAL_SECTION cs;
 public:
@@ -507,6 +516,25 @@ public:
 
 	void unlock() noexcept {
 		LeaveCriticalSection(&cs);
+	}
+};
+
+#elif defined LT_WIN
+#define LOCK_TYPE_LT "slim read write lock"
+
+class lite_mutex_t {
+	SRWLOCK srwl;
+public:
+	lite_mutex_t() {
+		InitializeSRWLock(&srwl);
+	}
+
+	void lock() noexcept {
+		AcquireSRWLockExclusive(&srwl);
+	}
+
+	void unlock() noexcept {
+		ReleaseSRWLockExclusive(&srwl);
 	}
 };
 #else
