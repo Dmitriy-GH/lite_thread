@@ -241,6 +241,8 @@ lite_thread_end()
 #if defined(_WIN32) || defined(_WIN64)
 #define LT_WIN
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 #define LT_VERSION "0.9.2" // Версия библиотеки
