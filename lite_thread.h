@@ -236,17 +236,10 @@ lite_thread_end()
 --- Компиляция в DLL под WinXP (там проблемы с thread_local и static при явной загрузке)
 #define LT_XP_DLL
 
---- Компиляция под WinXP не DLL (в XP нет SRWLOCK)
-#define LT_WIN_XP
-
 */
 
 #if defined(_WIN32) || defined(_WIN64)
-#ifdef LT_XP_DLL
-#define LT_WIN_XP
-#else
 #define LT_WIN
-#endif
 #include <windows.h>
 #endif
 
@@ -496,51 +489,28 @@ public:
 //----------------------------------------------------------------------------------
 //------ БЛОКИРОВКИ ----------------------------------------------------------------
 //----------------------------------------------------------------------------------
-#if defined LT_WIN_XP
-#define LOCK_TYPE_LT "critical section"
+#define LOCK_TYPE_LT "spinlock + Sleep(0)"
 
 class lite_mutex_t {
-	CRITICAL_SECTION cs;
+	std::atomic_flag af = ATOMIC_FLAG_INIT;
+
 public:
-	lite_mutex_t() {
-		InitializeCriticalSectionAndSpinCount(&cs, 1000);
-	}
-
-	~lite_mutex_t() {
-		DeleteCriticalSection(&cs);
-	}
-
 	void lock() noexcept {
-		EnterCriticalSection(&cs);
-	}
-
-	void unlock() noexcept {
-		LeaveCriticalSection(&cs);
-	}
-};
-
-#elif defined LT_WIN
-#define LOCK_TYPE_LT "slim read write lock"
-
-class lite_mutex_t {
-	SRWLOCK srwl;
-public:
-	lite_mutex_t() {
-		InitializeSRWLock(&srwl);
-	}
-
-	void lock() noexcept {
-		AcquireSRWLockExclusive(&srwl);
-	}
-
-	void unlock() noexcept {
-		ReleaseSRWLockExclusive(&srwl);
-	}
-};
+		while (af.test_and_set(std::memory_order_acquire)) {
+#if defined LT_WIN
+			Sleep(0);
 #else
-#define LOCK_TYPE_LT "std::mutex"
-typedef std::mutex lite_mutex_t;
+			usleep(20);
 #endif
+		}
+
+	}
+
+	void unlock() noexcept {
+		af.clear(std::memory_order_release);
+	}
+}; 
+
 
 class lite_lock_t {
 	lite_mutex_t* mtx;
