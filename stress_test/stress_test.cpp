@@ -32,7 +32,6 @@
 //#define LT_STAT_QUEUE
 //#define LT_DEBUG_LOG
 //#define LT_XP_DLL
-//#define LT_WIN_XP
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
