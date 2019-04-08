@@ -120,15 +120,15 @@ int tracer(Vector o, Vector d, double &t, Vector& n) {
 	for (int k = 19; k--;)
 		for (int j = 9; j--;)
 			if (G[j] & 1 << k) {
-				Vector p = o + Vector(-k, 0, -j - 4);
-				double b = p % d;
-				double c = p % p - 1;
+				Vector v = o + Vector(-k, 0, -j - 4);
+				double b = v % d;
+				double c = v % v - 1;
 				double q = b * b - c;
 				if (q > 0) {
 					double s = -b - sqrt(q);
 					if (s < t && s > .01) {
 						t = s;
-						n = !(p + d * t);
+						n = !(v + d * t);
 						m = 2;
 					}
 				}
@@ -282,7 +282,7 @@ void actor_start(int threads) {
 		}
 	}
 
-	printf("Init end: %lld msec\n", lite_time_now());
+	printf("Init end: %d msec\n", (int)lite_time_now());
 
 	lite_thread_end(); // Ожидание окончания расчета
 }
@@ -304,6 +304,6 @@ int main(int argc, char **argv) {
 		printf("lite_thread %d threads ...\n", threads);
 		actor_start(threads);
 	}
-	printf("Time: %lld msec\n", lite_time_now());
+	printf("Time: %d msec\n", (int)lite_time_now());
 	return 0;
 }
