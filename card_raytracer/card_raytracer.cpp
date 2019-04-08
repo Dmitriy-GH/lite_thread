@@ -41,12 +41,39 @@ card_raytracer.exe [threads]
 #endif
 #include "../lite_thread_util.h"
 
+#ifdef WINVER
+#include <windows.h>
+int cpu_count() {
+	SYSTEM_INFO sysinfo;
+	GetSystemInfo(&sysinfo);
+	return sysinfo.dwNumberOfProcessors;
+}
+#else
+#include <unistd.h>
+int cpu_count() {
+	int mib[4];
+	int numCPU;
+	std::size_t len = sizeof(numCPU);
+
+	/* set the mib for hw.ncpu */
+	mib[0] = CTL_HW;
+	mib[1] = HW_AVAILCPU;  // alternatively, try HW_NCPU;
+
+	/* get the number of CPUs from the system */
+	sysctl(mib, 2, &numCPU, &len, NULL, 0);
+
+	if (numCPU < 1) {
+		mib[1] = HW_NCPU;
+		sysctl(mib, 2, &numCPU, &len, NULL, 0);
+		if (numCPU < 1)
+			numCPU = 1;
+	}
+	return numCPU;
+}
+#endif
+
 #define WIDTH  512
 #define HEIGHT 512
-
-#define FILE_NAME "img.ppm"
-
-
 
 struct Vector {
 
@@ -160,8 +187,8 @@ Vector sampler(Vector o, Vector d) {
 
 //----------------------------------------------------------------------
 // Исходный вариант без акторов
-void original() {
-	FILE *out = fopen(FILE_NAME, "w");
+void original(const char* filename) {
+	FILE *out = fopen(filename, "w");
 	assert(out != NULL);
 	fprintf(out, "P6 %d %d 255 ", WIDTH, HEIGHT);
 	Vector g = !Vector(-6, -16, 0);
@@ -194,9 +221,9 @@ struct msg_t : public lite_msg_t {
 class writer_t : public lite_actor_t {
 	FILE *out;
 public:
-	writer_t() {
+	writer_t(const char* filename) {
 		type_add(lite_msg_type<msg_t>()); // Разрешение принимать сообщение типа msg_t
-		out = fopen(FILE_NAME, "w");
+		out = fopen(filename, "w");
 		assert(out != NULL);
 		fprintf(out, "P6 %d %d 255 ", WIDTH, HEIGHT);
 	}
@@ -249,10 +276,10 @@ public:
 };
 
 // Запуск расчета
-void actor_start(int threads) {
+void actor_start(const char* filename, int threads) {
 	// Создание акторов
 	// Писатель
-	writer_t* writer = new writer_t;
+	writer_t* writer = new writer_t(filename);
 	writer->name_set("writer");
 
 	// Упорядочиватель (из lite_thread_util.h)
@@ -288,21 +315,29 @@ void actor_start(int threads) {
 }
 
 int main(int argc, char **argv) {
+	if (argc < 2) {
+		fprintf(stderr, "\n\nUsage: card-raytracer <filename>.ppm [threads_count]\n");
+		return -1;
+	}
+
+
+
 	int threads = 0;
-	if (argc > 1) {
+	if (argc > 2) {
 		// Количество потоков
-		for (char* p = argv[1]; *p != 0 && *p >= '0' && *p <= '9'; p++) threads = threads * 10 + *p - '0';
+		for (char* p = argv[2]; *p != 0 && *p >= '0' && *p <= '9'; p++) threads = threads * 10 + *p - '0';
 	} else {
-		threads = 4;
+		threads = cpu_count();
 	}
 	printf("compile %s %s\n", __DATE__, __TIME__);
+
 	lite_time_now(); // Начало отсчета времени
 	if(threads == 0) { // Запуск оригинального кода
-		printf("original code ...\n");
-		original();
+		printf("original code to file %s ...\n", argv[1]);
+		original(argv[1]);
 	} else { // запуск кода на lite_thread
-		printf("lite_thread %d threads ...\n", threads);
-		actor_start(threads);
+		printf("lite_thread %d threads to file %s ...\n", threads, argv[1]);
+		actor_start(argv[1], threads);
 	}
 	printf("Time: %d msec\n", (int)lite_time_now());
 	return 0;
