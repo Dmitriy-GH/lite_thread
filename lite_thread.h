@@ -150,6 +150,16 @@ class actor_t : public lite_actor_t {
 очереди сообщений актора. Если по каким-либо причинам был пропушен момент запуска и наступил следующий, 
 то запуск будет один раз.
 
+ОБРАБОТКА ИСКЛЮЧЕНИЙ -------------------------------------------------------------------------
+
+При возниконвении исключений в методах recv() или timer() происходит вызов обработчика исключений
+По-умолчанию вызывается запись исключения в лог, но обработчик можно переопределить, для этого
+прописать метод exception()
+
+class actor_t : public lite_actor_t {
+	void exception(std::exception& ex) override {
+	}
+}
 
 РЕСУРСЫ --------------------------------------------------------------------------------------
 
@@ -256,6 +266,7 @@ lite_thread_end()
 #define LITE_ERROR_ACTOR_DOUBLE		3  // Попытка присвоить имя уже существующего актора
 #define LITE_ERROR_ACTOR_NAME		4  // Попытка смены имени актора
 #define LITE_ERROR_MSG_TYPE			5  // Сообщение необрабатываемого типа
+#define LITE_ERROR_EXCEPTION		6  // Исключение в коде актора
 #define LITE_ERROR_USER				16 // Пользовательские коды ошибок начиная с LITE_ERROR_USER
 #ifdef LT_DEBUG
 #ifdef NDEBUG
@@ -281,18 +292,34 @@ lite_thread_end()
 //-------- ВЫРАВНИВАНИЕ В ПАМЯТИ ---------------------------------------------------
 //----------------------------------------------------------------------------------
 // Выделение памяти с выравниванием под кэшлинию (кратно 0x40)
+#ifdef LT_WIN
+void* lite_malloc(size_t size) {
+	return _aligned_malloc(size, 0x40);
+}
+
+void lite_free(void *p) {
+	_aligned_free(p);
+}
+#else
+void* lite_malloc(size_t size) {
+	void *p;
+	if (posix_memalign(&p, 0x40, size)) p = NULL;
+	return p;
+}
+
+void lite_free(void *p) {
+	free(p);
+}
+#endif
+
+
 class lite_align64_t {
 public:
 	lite_align64_t() {}
 	lite_align64_t(int) {}
 
 	void *operator new(size_t size) {
-		void* p;
-#ifdef LT_WIN
-		p = _aligned_malloc(size, 0x40);
-#else
-		if (posix_memalign(&p, 0x40, size)) p = NULL;
-#endif
+		void* p = lite_malloc(size);
 		if (p == NULL) {
 			assert(p != NULL);
 			throw std::bad_alloc();
@@ -301,11 +328,7 @@ public:
 	}
 
 	void operator delete(void *p) {
-#ifdef LT_WIN
-		_aligned_free(p);
-#else
-		free(p);
-#endif
+		lite_free(p);
 	}
 };
 
@@ -460,29 +483,29 @@ public:
 	void print_stat() {
 		store();
 		printf("\n------- STAT -------\n");
-		printf("thread_max     %llu\n", (uint64_t)si().stat_thread_max);
-		printf("parallel_run   %llu\n", (uint64_t)si().stat_parallel_run);
-		printf("thread_create  %llu\n", (uint64_t)si().stat_thread_create);
-		printf("thread_wake_up %llu\n", (uint64_t)si().stat_thread_wake_up);
-		printf("try_wake_up    %llu\n", (uint64_t)si().stat_try_wake_up);
-		printf("msg_create     %llu\n", (uint64_t)si().stat_msg_create);
-		printf("actor_create   %llu\n", (uint64_t)si().stat_actor_create);
-		printf("actor_get      %llu\n", (uint64_t)si().stat_actor_get);
-		printf("actor_find     %llu\n", (uint64_t)si().stat_actor_find);
-		printf("actor_not_run  %llu\n", (uint64_t)si().stat_actor_not_run);
-		printf("cache_found    %llu\n", (uint64_t)si().stat_cache_found);
-		printf("cache_bad      %llu\n", (uint64_t)si().stat_cache_bad);
-		printf("cache_full     %llu\n", (uint64_t)si().stat_cache_full);
-		printf("resource_lock  %llu\n", (uint64_t)si().stat_res_lock);
+		printf("thread_max     %u\n", (uint32_t)si().stat_thread_max);
+		printf("parallel_run   %u\n", (uint32_t)si().stat_parallel_run);
+		printf("thread_create  %u\n", (uint32_t)si().stat_thread_create);
+		printf("thread_wake_up %u\n", (uint32_t)si().stat_thread_wake_up);
+		printf("try_wake_up    %u\n", (uint32_t)si().stat_try_wake_up);
+		printf("msg_create     %u\n", (uint32_t)si().stat_msg_create);
+		printf("actor_create   %u\n", (uint32_t)si().stat_actor_create);
+		printf("actor_get      %u\n", (uint32_t)si().stat_actor_get);
+		printf("actor_find     %u\n", (uint32_t)si().stat_actor_find);
+		printf("actor_not_run  %u\n", (uint32_t)si().stat_actor_not_run);
+		printf("cache_found    %u\n", (uint32_t)si().stat_cache_found);
+		printf("cache_bad      %u\n", (uint32_t)si().stat_cache_bad);
+		printf("cache_full     %u\n", (uint32_t)si().stat_cache_full);
+		printf("resource_lock  %u\n", (uint32_t)si().stat_res_lock);
 		#ifdef LT_STAT_QUEUE
-		printf("queue_max      %llu\n", (uint64_t)si().stat_queue_max);
+		printf("queue_max      %u\n", (uint32_t)si().stat_queue_max);
 		#endif
-		printf("msg_send       %llu\n", (uint64_t)si().stat_msg_send);
+		printf("msg_send       %u\n", (uint32_t)si().stat_msg_send);
 		int64_t time_ms = lite_time_now();
-		printf("msg_send/sec   %llu\n", (uint64_t)si().stat_msg_send * 1000 / (time_ms > 0 ? time_ms : 1)); // Сообщений в секунду
+		printf("msg_send/sec   %u\n", (uint32_t)(si().stat_msg_send * 1000 / (time_ms > 0 ? time_ms : 1))); // Сообщений в секунду
 		printf("\n");
-		if (si().stat_msg_create != si().stat_msg_erase) printf("!!! ERROR: lost %lld messages (erase %lld)\n\n", (int64_t)si().stat_msg_create - si().stat_msg_erase, (int64_t)si().stat_msg_erase); // Утечка памяти
-		if (si().stat_actor_create != si().stat_actor_erase) printf("!!! ERROR: lost %lld actors (erase %lld)\n\n", (int64_t)si().stat_actor_create - si().stat_actor_erase, (int64_t)si().stat_actor_erase); // Утечка памяти
+		if (si().stat_msg_create != si().stat_msg_erase) printf("!!! ERROR: lost %d messages (erase %d)\n\n", (uint32_t)(si().stat_msg_create - si().stat_msg_erase), (uint32_t)si().stat_msg_erase); // Утечка памяти
+		if (si().stat_actor_create != si().stat_actor_erase) printf("!!! ERROR: lost %d actors (erase %d)\n\n", (uint32_t)(si().stat_actor_create - si().stat_actor_erase), (uint32_t)si().stat_actor_erase); // Утечка памяти
 	}
 };
 
@@ -553,18 +576,18 @@ static void lite_timer_run(lite_actor_t* actor, int time_ms) noexcept;
 //----------------------------------------------------------------------------------
 struct lite_msg_t : public lite_align64_t {
 public:
-	size_t type = {0};		// Тип сообщения
+	size_t lite_msg_type = {0};		// Тип сообщения
 
 	friend lite_msg_queue_t;
 protected:
-	lite_msg_t* next = {0};	// Указатель на следующее сообщение в очереди
+	lite_msg_t* lite_msg_next = {0};	// Указатель на следующее сообщение в очереди
 
 public:
 
 	lite_msg_t() {}
 
 	lite_msg_t(const lite_msg_t& m) {
-		type = m.type;
+		lite_msg_type = m.lite_msg_type;
 	}
 
 	virtual ~lite_msg_t(){};
@@ -586,7 +609,7 @@ public:
 	// Установка типа сообщения по классу
 	template <typename T>
 	static void type_set(T* msg) {
-		if(msg->type == 0) msg->type = typeid(T).hash_code();
+		if(msg->lite_msg_type == 0) msg->lite_msg_type = typeid(T).hash_code();
 	}
 
 private:
@@ -618,10 +641,10 @@ public:
 	// Тип сообщения строкой
 	const std::string type_descr() {
 		lite_lock_t lck(si().mtx); // Блокировка
-		type_name_idx_t::iterator it = si().tn_idx.find(type);
+		type_name_idx_t::iterator it = si().tn_idx.find(lite_msg_type);
 		if (it == si().tn_idx.end()) {
 			std::string t = "type#";
-			t += std::to_string(type);
+			t += std::to_string(lite_msg_type);
 			return t;
 		} else {
 			return it->second;
@@ -651,13 +674,13 @@ public:
 
 	// Добавление сообщения в очередь
 	void push(lite_msg_t* msg) noexcept {
-		msg->next = NULL;
+		msg->lite_msg_next = NULL;
 		lite_lock_t lck(mtx); // Блокировка
 		if(msg_last == NULL) {
 			msg_first2 = msg;
 			msg_last = msg;
 		} else {
-			msg_last->next = msg;
+			msg_last->lite_msg_next = msg;
 			msg_last = msg;
 		}
 		#ifdef LT_STAT_QUEUE
@@ -682,13 +705,13 @@ public:
 		lite_msg_t* msg = msg_first;
 
 		if(msg != NULL) {
-			msg_first = msg->next; // Чтение без блокировки
+			msg_first = msg->lite_msg_next; // Чтение без блокировки
 			if (msg_first == NULL) {
 				if(!lock) {
 					mtx.lock(); // Блокировка для доступа к msg_last
 					lock = true;
 				}
-				msg_first = msg->next; // Повторное чтение под блокировкой на случай если был push
+				msg_first = msg->lite_msg_next; // Повторное чтение под блокировкой на случай если был push
 				if(msg_first == NULL) msg_last = NULL;
 			}
 		}
@@ -906,7 +929,11 @@ protected:
 				if (msg == NULL) break;
 				// Запуск функции
 				t.msg_del = msg; // Пометка на удаление
-				recv(msg); // Обработка
+				try {
+					recv(msg); // Обработка
+				} catch(std::exception e) {
+					exception(e);
+				}
 				if (msg == t.msg_del) delete msg;
 				#ifdef LT_STAT
 				lite_thread_stat_t::ti().stat_msg_send++;
@@ -914,7 +941,11 @@ protected:
 			}
 			if(timer_run) {
 				timer_run = false;
-				timer();
+				try {
+					timer();
+				} catch (std::exception e) {
+					exception(e);
+				}
 			}
 			in_cache = false;
 		}
@@ -965,7 +996,7 @@ public:
 			// Проверка что тип сообщения в обрабатываемых
 			bool found = false;
 			for (auto& t : type_list) {
-				if (msg->type == t) {
+				if (msg->lite_msg_type == t) {
 					found = true;
 					break;
 				}
@@ -1029,6 +1060,11 @@ public:
 	//-----------------------------------------------------------------------------------
 	// Обработчик сообщения, прописывать в дочернем классе
 	virtual void recv(lite_msg_t*) = 0;
+
+	// Обработчик исключений
+	virtual void exception(std::exception& ex) {
+		lite_log(LITE_ERROR_EXCEPTION, "%s: exception %s", name_get().c_str(), ex.what());
+	}
 
 	virtual void before_destroy() {
 	}
@@ -1560,7 +1596,7 @@ class lite_thread_t : lite_align64_t {
 			bool stop = false;
 			{
 				#ifdef LT_DEBUG
-				lite_log(0, "thread#%d sleep at %lld ms", (int)lt->num, lite_time_now());
+				lite_log(0, "thread#%d sleep at %d ms", (int)lt->num, (int)lite_time_now());
 				#endif
 				if(thread_work() == 0) si().cv_end.notify_one(); // Если никто не работает, то разбудить ожидание завершения
 				lite_thread_t* wf = si().worker_free;
