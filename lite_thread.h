@@ -525,7 +525,7 @@ public:
 #if defined LT_WIN
 			Sleep(0);
 #else
-			usleep(20);
+			usleep(0);
 #endif
 		}
 
@@ -718,7 +718,7 @@ public:
 		if (lock) mtx.unlock(); // Снятие блокировки
 
 		#ifdef LT_DEBUG
-		if(msg != NULL) msg->next = NULL;
+		if(msg != NULL) msg->lite_msg_next = NULL;
 		#endif
 		#ifdef LT_STAT_QUEUE
 		if (msg != NULL) size--;
