@@ -35,25 +35,12 @@ card_raytracer.exe [threads]
 #include <stdio.h>
 #include <math.h>
 #include <assert.h>
-#define LT_STAT
+//#define LT_STAT
+//#define LT_DEBUG
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 #include "../lite_thread_util.h"
-
-#ifdef WINVER
-#include <windows.h>
-int cpu_count() {
-	SYSTEM_INFO sysinfo;
-	GetSystemInfo(&sysinfo);
-	return sysinfo.dwNumberOfProcessors;
-}
-#else
-#include <unistd.h>
-int cpu_count() {
-	return sysconf(_SC_NPROCESSORS_ONLN);
-}
-#endif
 
 #define WIDTH  512
 #define HEIGHT 512
@@ -115,7 +102,9 @@ int G[] = {
 };
 
 double Random() {
-	return (double)rand() / RAND_MAX;
+	thread_local uint32_t state = 12345;
+	state = state * 1103515245;
+	return (double)(state >> 16) / 65536;
 }
 
 int tracer(Vector o, Vector d, double &t, Vector& n) {
@@ -275,8 +264,8 @@ void actor_start(const char* filename, int threads) {
 	worker->parallel_set(threads);
 
 	// Ограничение количества потоков
-	lite_thread_max(threads);
-
+	//lite_thread_max(threads);
+	
 	// Создание сообщений
 	size_t idx = 0; // номер сообщения
 	for (int y = HEIGHT; y--;) {
@@ -299,7 +288,7 @@ void actor_start(const char* filename, int threads) {
 
 int main(int argc, char **argv) {
 	if (argc < 2) {
-		fprintf(stderr, "\n\nUsage: card-raytracer <filename>.ppm [threads_count]\n");
+		fprintf(stderr, "\n\nUsage: card-raytracer-actor.exe <filename>.ppm [threads_count]\n");
 		return -1;
 	}
 
@@ -310,9 +299,9 @@ int main(int argc, char **argv) {
 		// Количество потоков
 		for (char* p = argv[2]; *p != 0 && *p >= '0' && *p <= '9'; p++) threads = threads * 10 + *p - '0';
 	} else {
-		threads = cpu_count();
+		threads = lite_cpu_count();
 	}
-	printf("compile %s %s\n", __DATE__, __TIME__);
+	printf("compile %s %s   LOCK: %s\n", __DATE__, __TIME__, LOCK_TYPE_LT);
 
 	lite_time_now(); // Начало отсчета времени
 	if(threads == 0) { // Запуск оригинального кода
