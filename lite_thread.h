@@ -1899,3 +1899,31 @@ static void lite_timer_run(lite_actor_t* actor, int time_ms) noexcept {
 	lite_thread_t::timer_set(actor, time_ms);
 }
 #pragma warning( pop )
+
+
+//----------------------------------------------------------------------------------
+//-------- ОБРАБОТКА ОДНОТИПНЫХ СООБЩЕНИЙ ------------------------------------------
+//----------------------------------------------------------------------------------
+// Базовый класс для промежуточной обработки сообщений одного типа
+template <typename T>
+class lite_worker_t : public lite_actor_t {
+	lite_actor_t* next_la; // следующий обработчик
+
+	void recv(lite_msg_t* msg) override {
+		T* m = work(static_cast<T*>(msg));
+		if (m != NULL) next_la->run(m);
+	}
+public:
+	lite_worker_t() : next_la(NULL) {
+	}
+
+	void next_set(lite_actor_t* next) {
+		this->next_la = next;
+		type_add(lite_msg_type<T>());
+	}
+
+	// Обработка сообщения, прописывается в дочернем классе
+	// Возвращает сообщения для передачи дальше или NULL
+	virtual T* work(T*) = 0;
+
+};
