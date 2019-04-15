@@ -84,8 +84,17 @@ struct Vector {
 		return *this * (1 / sqrt(*this % *this));
 	}
 
+	uint8_t* print(uint8_t* out) {
+		*out++ = (uint8_t)x;
+		*out++ = (uint8_t)y;
+		*out++ = (uint8_t)z;
+		return out;
+	}
+
 	void print(FILE* out) {
-		fprintf(out, "%c%c%c", (int)x, (int)y, (int)z);
+		uint8_t buf[3];
+		print(buf);
+		fwrite(buf, 1, 3, out);
 	}
 };
 
@@ -186,7 +195,7 @@ struct msg_t : public lite_msg_t {
 	size_t idx;
 	int x;
 	int y;
-	Vector result;
+	uint8_t result[3];
 };
 
 // Писатель (однопоточный)
@@ -207,42 +216,34 @@ public:
 	// Обработка сообщения
 	void recv(lite_msg_t* msg) override {
 		msg_t* m = static_cast<msg_t*>(msg);
-		assert(m != NULL);
-		m->result.print(out);
+		fwrite(m->result, 1, 3, out);
 	}
 };
 
 
+// Константы для расчета
+Vector g = !Vector(-6, -16, 0);
+Vector a = !(Vector(0, 0, 1) ^ g) * .002;
+Vector b = !(g ^ a) * .002;
+Vector c = (a + b) * -256 + g;
+
 // Считатель (потокобезопасный)
-class worker_t : public lite_actor_t {
-	Vector g = !Vector(-6, -16, 0);
-	Vector a = !(Vector(0, 0, 1) ^ g) * .002;
-	Vector b = !(g ^ a) * .002;
-	Vector c = (a + b) * -256 + g;
-	lite_actor_t* order; // Упорядочиватель
-
+class worker_t : public lite_worker_t<msg_t> {
 public:
-	worker_t() {
-		order = lite_actor_get("order"); // Получение упорядочивателя по имени
-		assert(order != NULL);
-		type_add(lite_msg_type<msg_t>()); // Разрешение принимать сообщение типа msg_t
-	}
-
 	// Расчет одного пикселя
-	void calc(int x, int y, Vector& p) {
-		p.init(13, 13, 13);
+	void calc(int x, int y, uint8_t* res) {
+		Vector p(13, 13, 13);
 		for (int r = 64; r--;) {
 			Vector t = a * (Random() - .5) * 99 + b * (Random() - .5) * 99;
 			p = sampler(Vector(17, 16, 8) + t, !(t * -1 + (a * (Random() + x) + b * (y + Random()) + c) * 16)) * 3.5 + p;
 		}
+		p.print(res);
 	}
 
 	// Прием сообщения
-	void recv(lite_msg_t* msg) override {
-		msg_t* m = static_cast<msg_t*>(msg); // Указатель на содержимое
-		assert(m != NULL);
+	msg_t* work(msg_t* m) override {
 		calc(m->x, m->y, m->result); // Расчет
-		order->run(msg); // Отправка
+		return m; // Отправка
 	}
 
 };
@@ -255,12 +256,14 @@ void actor_start(const char* filename, int threads) {
 	writer->name_set("writer");
 
 	// Упорядочиватель (из lite_thread_util.h)
-	lite_order_t<msg_t>* order = new lite_order_t<msg_t>("writer");
+	lite_order_t<msg_t>* order = new lite_order_t<msg_t>();
 	order->name_set("order");
+	order->next_set(writer);
 
 	// Считатель 
 	worker_t* worker = new worker_t;
 	worker->name_set("worker");
+	worker->next_set(order);
 	worker->parallel_set(threads);
 
 	// Ограничение количества потоков
