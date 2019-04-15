@@ -8,28 +8,31 @@ img.ppm можно посмотреть каким-нибудь просмотр
 обсчитывает каждый пиксель изображения и сохраняет в файл. 
 
 По модели акторов создается три актора:
-1. Считатель. Обсчитывает один пиксель. Код Считателя потокобезопасный, т.к. не имеет меняющегося окружения, 
+1. Считатель. Обсчитывает одну строку. Код Считателя потокобезопасный, т.к. не имеет меняющегося окружения, 
    поэтому его можно запускать параллельно.
 2. Упорядочиватель. Однопоточный. Восстанавливает порядок следования сообщений.
 3. Писатель. Однопоточный. Пишет результат в файл.
 
-В начале работы (actor_start(int threads)) создается 260 тыс. сообщений, заданий на обсчет каждой точки и 
-отправляются Считателю. По окончанию обсчета точки Считатель отправляет результат Упорядочивателю, который
+В начале работы (actor_start(int threads)) создается 512 сообщений, заданий на обсчет каждой строки и 
+отправляются Считателю. По окончанию обсчета строки Считатель отправляет результат Упорядочивателю, который
 кэширует пришедшие не по порядку сообщения и отправляет Писателю сообщения в соответствии с изначальным 
 порядком.
 
 
 -----------------------------------------------------------------------------------------------------------
-Запускать с параметром количество потоков
+Параметры запуска: имя файла и количество потоков
 
-card_raytracer.exe [threads]
+card_raytracer.exe <filename>.ppm [threads_count]
 
-если указать 0 запустится оригинальный вариант без акторов
-по умолчанию threads = 4 
+если threads_count указать 0 запустится оригинальный вариант без акторов
+по умолчанию threads_count - количество процессов в системе
 
 
 */
 
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdlib.h>   
 #include <stdio.h>
@@ -37,9 +40,6 @@ card_raytracer.exe [threads]
 #include <assert.h>
 //#define LT_STAT
 //#define LT_DEBUG
-#ifdef NDEBUG
-#undef NDEBUG
-#endif
 #include "../lite_thread_util.h"
 
 #define WIDTH  512
@@ -193,9 +193,8 @@ void original(const char* filename) {
 //Вариант с акторами
 struct msg_t : public lite_msg_t {
 	size_t idx;
-	int x;
 	int y;
-	uint8_t result[3];
+	uint8_t result[3 * WIDTH];
 };
 
 // Писатель (однопоточный)
@@ -216,7 +215,7 @@ public:
 	// Обработка сообщения
 	void recv(lite_msg_t* msg) override {
 		msg_t* m = static_cast<msg_t*>(msg);
-		fwrite(m->result, 1, 3, out);
+		fwrite(m->result, 1, sizeof(m->result), out);
 	}
 };
 
@@ -230,19 +229,18 @@ Vector c = (a + b) * -256 + g;
 // Считатель (потокобезопасный)
 class worker_t : public lite_worker_t<msg_t> {
 public:
-	// Расчет одного пикселя
-	void calc(int x, int y, uint8_t* res) {
-		Vector p(13, 13, 13);
-		for (int r = 64; r--;) {
-			Vector t = a * (Random() - .5) * 99 + b * (Random() - .5) * 99;
-			p = sampler(Vector(17, 16, 8) + t, !(t * -1 + (a * (Random() + x) + b * (y + Random()) + c) * 16)) * 3.5 + p;
-		}
-		p.print(res);
-	}
-
-	// Прием сообщения
+	// Обсчет строки
 	msg_t* work(msg_t* m) override {
-		calc(m->x, m->y, m->result); // Расчет
+		uint8_t* out = m->result;
+		for (int x = WIDTH; x--;) {
+			Vector p(13, 13, 13);
+			for (int r = 64; r--;) {
+				Vector t = a * (Random() - .5) * 99 + b * (Random() - .5) * 99;
+				p = sampler(Vector(17, 16, 8) + t, !(t * -1 + (a * (Random() + x) + b * (m->y + Random()) + c) * 16)) * 3.5 + p;
+			}
+			out = p.print(out);
+		}
+		assert(out == m->result + sizeof(m->result));
 		return m; // Отправка
 	}
 
@@ -272,16 +270,13 @@ void actor_start(const char* filename, int threads) {
 	// Создание сообщений
 	size_t idx = 0; // номер сообщения
 	for (int y = HEIGHT; y--;) {
-		for (int x = WIDTH; x--;) {
-			// Создание сообщения
-			msg_t* msg = new msg_t;
-			// Заполнение
-			msg->idx = idx++;
-			msg->x = x;
-			msg->y = y;
-			// Отправка
-			worker->run(msg);
-		}
+		// Создание сообщения
+		msg_t* msg = new msg_t;
+		// Заполнение
+		msg->idx = idx++;
+		msg->y = y;
+		// Отправка
+		worker->run(msg);
 	}
 
 	printf("Init end: %d msec\n", (int)lite_time_now());
@@ -291,7 +286,7 @@ void actor_start(const char* filename, int threads) {
 
 int main(int argc, char **argv) {
 	if (argc < 2) {
-		fprintf(stderr, "\n\nUsage: card-raytracer-actor.exe <filename>.ppm [threads_count]\n");
+		fprintf(stderr, "\n\nUsage: card_raytracer.exe <filename>.ppm [threads_count]\n");
 		return -1;
 	}
 
