@@ -34,15 +34,13 @@ class lite_order_t : public lite_actor_t {
 	lite_actor_t* send_to;	// Адрес отправки упорядоченной последовательности
 
 public:
-	lite_order_t(const std::string next_actor) : next(0) {
-		send_to = lite_actor_get(next_actor);
-		if (send_to == NULL) { // Не задан адрес пересылки
-			lite_log(LITE_ERROR_USER, "Can`t find actor '%s'", next_actor.c_str());
-			assert(send_to == NULL);
-			return;
-		}
+	lite_order_t() : next(0) {
 		// Типы принимаемых сообщений
 		type_add(lite_msg_type<T>());
+	}
+
+	void next_set(lite_actor_t* la) {
+		send_to = la;
 	}
 
 	~lite_order_t() {
